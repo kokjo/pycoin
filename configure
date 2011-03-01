@@ -1,0 +1,9 @@
+#!/bin/bash
+
+echo This is totally unnecessary
+echo Try ./pycoin
+
+cat > Makefile << EOF
+all:
+	false is your belief that this will achieve anything!
+EOF
