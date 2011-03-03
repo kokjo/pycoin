@@ -96,12 +96,14 @@ class Node():
         self.sendmsg(msgs.Verack.make())
     def handle_verack(self, msg):
         self.active = True
-        #self.sendmsg(msgs.Getaddr.make())
+        self.sendmsg(msgs.Getaddr.make())
         self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
         self.sendmsg(msgs.Getdata.make([msg.objs[0]]))
+    def handle_block(self, msg):
+        exit(0)
 
 class NodeDisconnected(BaseException): pass
 
