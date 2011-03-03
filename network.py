@@ -83,7 +83,7 @@ class Node():
         if msg == None:
             return
         print(json.dumps(msg.tojson()))
-        #assert msg.tojson() == msg.__class__.fromjson(msg.tojson()).tojson()
+        #msg.tojson() == msg.__class__.fromjson(msg.tojson()).tojson()
         getattr(self, "handle_" + msg.type)(msg)
     def close(self):
         self.socket.close()
@@ -96,7 +96,7 @@ class Node():
         self.sendmsg(msgs.Verack.make())
     def handle_verack(self, msg):
         self.active = True
-        #self.sendmsg(msgs.Getaddr.make())
+        self.sendmsg(msgs.Getaddr.make())
         self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
