@@ -107,6 +107,15 @@ def VarList(ty):
             return VarInt.tobinary(len(obj)) + b"".join((ty.tobinary(x) for x in obj))
     return _
 
+class VarBytes():
+    def frombinary(bdata):
+        num, bdata = VarInt.frombinary(bdata)
+        if len(bdata) < num:
+            raise ProtocolViolation
+        return bdata[:num], bdata[num:]
+    def tobinary(obj):
+        return VarInt.tobinary(len(obj)) + obj
+
 class IPv4Inv6():
     def frombinary(bdata):
         import ipaddr

@@ -198,13 +198,61 @@ class Getdata(js.Entity, bs.Entity):
     def make(self, objs):
         self.objs = objs
 
+class TxOutpoint(js.Entity, bs.Entity):
+    fields = {
+        "tx":js.Hash,
+        "index":js.Int,
+    }
+    bfields = [
+        ("tx", bs.Hash),
+        ("index", bs.structfmt("<I")),
+    ]
+
+class TxInput(js.Entity, bs.Entity):
+    fields = {
+        "outpoint":TxOutpoint,
+        "script":js.Bytes,
+        "sequence":js.Int,
+    }
+    bfields = [
+        ("outpoint", TxOutpoint),
+        ("script", bs.VarBytes),
+        ("sequence", bs.structfmt("<I")),
+    ]
+
+class TxOutput(js.Entity, bs.Entity):
+    fields = {
+        "amount":js.Int,
+        "script":js.Bytes,
+    }
+    bfields = [
+        ("amount", bs.structfmt("<Q")),
+        ("script", bs.VarBytes),
+    ]
+
+class Tx(js.Entity, bs.Entity):
+    type = "tx"
+    fields = {
+        "version":js.Int,
+        "inputs":js.List(TxInput),
+        "outputs":js.List(TxOutput),
+        "locktime":js.Int,
+    }
+    bfields = [
+        ("version", bs.structfmt("<I")),
+        ("inputs", bs.VarList(TxInput)),
+        ("outputs", bs.VarList(TxOutput)),
+        ("locktime", bs.structfmt("<I")),
+    ]
+        
+
 class Block(js.Entity, bs.Entity):
     fields = {
         "version":js.Int,
         "prev":js.Hash,
         "merkle":js.Hash,
         "time":js.Int,
-        "bits":js.Int,# FIXME its a bytestring
+        "bits":js.Bytes,
         "nonce":js.Int,
     }
     bfields = [
@@ -212,18 +260,20 @@ class Block(js.Entity, bs.Entity):
         ("prev", bs.Hash),
         ("merkle", bs.Hash),
         ("time", bs.structfmt("<I")),
-        ("bits", bs.structfmt("<I")), # FIXME bytestring
+        ("bits", bs.structfmt("<4s")),
         ("nonce", bs.structfmt("<I")),
     ]
 
-class Blockmsg(js.Entity, bs.Entity): # FIXME no tx's yet
+class Blockmsg(js.Entity, bs.Entity):
     type = "block"
     fields = {
         "type":js.Str,
         "block":Block,
+        "txs":js.List(Tx)
     }
     bfields = [
         ("block", Block),
+        ("txs", bs.VarList(Tx)),
     ]
 
 msgtable = {
@@ -235,4 +285,5 @@ msgtable = {
     'inv':Inv,
     'getdata':Getdata,
     'block':Blockmsg,
+    'tx':Tx,
 }

@@ -10,11 +10,13 @@ def constructor(func):
         return self
     return f
 
-class Hash():
+class Bytes():
     def tojson(obj):
         return binascii.hexlify(obj).decode("ascii")
     def fromjson(json):
         return binascii.unhexlify(json.encode("ascii"))
+
+Hash = Bytes
 
 class Entity():
     def tojson(self):
