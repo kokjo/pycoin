@@ -16,7 +16,11 @@ class Bytes():
     def fromjson(json):
         return binascii.unhexlify(json.encode("ascii"))
 
-Hash = Bytes
+class Hash():
+    def tojson(obj):
+        return binascii.hexlify(bytes(reversed(obj))).decode("ascii")
+    def fromjson(obj):
+        return bytes(reversed((binascii.unhexlify(json.encode("ascii")))))
 
 class Entity():
     def tojson(self):

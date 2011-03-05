@@ -170,6 +170,9 @@ class InvVect(js.Entity, bs.Entity):
         ("objtype", bs.structfmt("<I")),
         ("hash", bs.Hash),
     ]
+    @constructor
+    def make(self, objtype, hash):
+        self.objtype, self.hash = objtype, hash
 
 class Inv(js.Entity, bs.Entity):
     type = "inv"
@@ -244,7 +247,9 @@ class Tx(js.Entity, bs.Entity):
         ("outputs", bs.VarList(TxOutput)),
         ("locktime", bs.structfmt("<I")),
     ]
-        
+    @cachedproperty
+    def hash(self):
+        return doublesha(self.tobinary())
 
 class Block(js.Entity, bs.Entity):
     fields = {
@@ -263,6 +268,9 @@ class Block(js.Entity, bs.Entity):
         ("bits", bs.structfmt("<4s")),
         ("nonce", bs.structfmt("<I")),
     ]
+    @cachedproperty
+    def hash(self):
+        return doublesha(self.tobinary())
 
 class Blockmsg(js.Entity, bs.Entity):
     type = "block"

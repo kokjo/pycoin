@@ -61,6 +61,8 @@ class Node():
         self.buffer = self.buffer[header.len + HEADER_LEN:]
         return header.deserialize(body)
     def sendmsg(self, msg):
+        print("========US========")
+        print(msg.tojson())
         self.outbuf.extend(msgs.serialize(msg))
     def writable(self):
         bytessent = self.socket.send(self.outbuf)
@@ -82,6 +84,7 @@ class Node():
             self.close()
         if msg == None:
             return
+        print("=======THEM=======")
         print(json.dumps(msg.tojson()))
         #msg.tojson() == msg.__class__.fromjson(msg.tojson()).tojson()
         getattr(self, "handle_" + msg.type)(msg)
