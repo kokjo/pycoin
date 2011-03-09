@@ -9,6 +9,7 @@ from socket import AF_INET, SOCK_STREAM
 
 import msgs
 import storage
+import protocol
 import status
 
 from msgs import HEADER_LEN, HEADER_START
@@ -99,16 +100,15 @@ class Node():
         self.sendmsg(msgs.Verack.make())
     def handle_verack(self, msg):
         self.active = True
-        self.sendmsg(msgs.Getaddr.make())
-        self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
+        #self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
-        self.sendmsg(msgs.Getdata.make([msg.objs[0]]))
+        self.sendmsg(msgs.Getdata.make([msg.objs]))
     def handle_block(self, msg):
         pass
     def handle_tx(self, msg):
-        pass
+        protocol.storetx(msg)
 
 class NodeDisconnected(BaseException): pass
 

@@ -251,13 +251,29 @@ class Tx(js.Entity, bs.Entity):
     def hash(self):
         return doublesha(self.tobinary())
 
+class TxAux(js.Entity, bs.Entity):
+    fields = {
+        "tx":Tx,
+        "block":js.Hash,
+        "redeemed":js.List(js.Hash),
+    }
+    bfields = [
+        ("tx", Tx),
+        ("block", bs.Hash),
+        ("redeemed", bs.VarList(bs.Hash)),
+    ]
+    @constructor
+    def make(self, tx):
+        self.tx, self.block = tx, nullhash
+        self.redeemed = [nullhash] * len(tx.outputs)
+
 class Block(js.Entity, bs.Entity):
     fields = {
         "version":js.Int,
         "prev":js.Hash,
         "merkle":js.Hash,
         "time":js.Int,
-        "bits":js.Bytes,
+        "diff":js.Bytes,
         "nonce":js.Int,
     }
     bfields = [
@@ -265,7 +281,7 @@ class Block(js.Entity, bs.Entity):
         ("prev", bs.Hash),
         ("merkle", bs.Hash),
         ("time", bs.structfmt("<I")),
-        ("bits", bs.structfmt("<4s")),
+        ("diff", bs.structfmt("<4s")),
         ("nonce", bs.structfmt("<I")),
     ]
     @cachedproperty
@@ -282,6 +298,26 @@ class Blockmsg(js.Entity, bs.Entity):
     bfields = [
         ("block", Block),
         ("txs", bs.VarList(Tx)),
+    ]
+
+class BlockAux(js.Entity, bs.Entity):
+    fields = {
+        "block":Block,
+        "txs":js.List(js.Hash),
+        "number":js.Int,
+        "totaldiff":js.Int,
+        "invalid":js.Bool,
+        "mainchain":js.Bool,
+        "succ": js.Hash,
+    }
+    bfields = [
+        ("block", Block),
+        ("txs", bs.VarList(bs.Hash)),
+        ("number", bs.structfmt("<I")),
+        ("totaldiff", bs.structfmt("<Q")),
+        ("invalid", bs.structfmt("<?")),
+        ("mainchain", bs.structfmt("<?")),
+        ("succ", bs.Hash),
     ]
 
 msgtable = {

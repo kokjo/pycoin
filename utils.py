@@ -29,3 +29,4 @@ def doublesha(data):
     return sha256(hash1.digest()).digest()
 
 nullhash = b"\0"*32
+blockreward = 5000000000
