@@ -273,7 +273,7 @@ class Block(js.Entity, bs.Entity):
         "prev":js.Hash,
         "merkle":js.Hash,
         "time":js.Int,
-        "diff":js.Bytes,
+        "bits":js.Int,
         "nonce":js.Int,
     }
     bfields = [
@@ -281,7 +281,7 @@ class Block(js.Entity, bs.Entity):
         ("prev", bs.Hash),
         ("merkle", bs.Hash),
         ("time", bs.structfmt("<I")),
-        ("diff", bs.structfmt("<4s")),
+        ("bits", bs.structfmt("<I")),
         ("nonce", bs.structfmt("<I")),
     ]
     @cachedproperty
@@ -308,6 +308,7 @@ class BlockAux(js.Entity, bs.Entity):
         "totaldiff":js.Int,
         "invalid":js.Bool,
         "mainchain":js.Bool,
+        "chained":js.Bool,
         "succ": js.Hash,
     }
     bfields = [
@@ -317,6 +318,7 @@ class BlockAux(js.Entity, bs.Entity):
         ("totaldiff", bs.structfmt("<Q")),
         ("invalid", bs.structfmt("<?")),
         ("mainchain", bs.structfmt("<?")),
+        ("chained", bs.structfmt("<?")),
         ("succ", bs.Hash),
     ]
 

@@ -11,6 +11,7 @@ import msgs
 import storage
 import protocol
 import status
+import timerq
 
 from msgs import HEADER_LEN, HEADER_START
 from utils import *
@@ -104,7 +105,7 @@ class Node():
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
-        self.sendmsg(msgs.Getdata.make([msg.objs]))
+        self.sendmsg(msgs.Getdata.make(msg.objs))
     def handle_block(self, msg):
         pass
     def handle_tx(self, msg):
@@ -112,10 +113,13 @@ class Node():
 
 class NodeDisconnected(BaseException): pass
 
+
 def mainloop():
     while True:
         writenodes = [node for node in nodes if node.wantswrite()]
-        readable, writable, _ = select.select(nodes, writenodes, [])
+        waitfor = timerq.wait_for()
+        readable, writable, _ = select.select(nodes, writenodes, [], waitfor)
+        timerq.do_events()
         for node in nodes:
             try:
                 if node in readable:
