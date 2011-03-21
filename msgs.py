@@ -321,6 +321,11 @@ class BlockAux(js.Entity, bs.Entity):
         ("chained", bs.structfmt("<?")),
         ("succ", bs.Hash),
     ]
+    @constructor
+    def make(self, block):
+        self.block, self.txs, self.number = block, [], 2**32-1
+        self.totaldiff, self.invalid, self.mainchain = 0, False, False
+        self.chained, self.succ = False, nullhash
 
 msgtable = {
     'version':Version,
