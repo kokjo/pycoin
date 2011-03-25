@@ -13,7 +13,7 @@ import protocol
 import status
 import timerq
 
-from msgs import HEADER_LEN, HEADER_START
+from msgs import HEADER_LEN, HEADER_START, TYPE_TX, TYPE_BLOCK
 from utils import *
 
 PORT = 8333
@@ -42,6 +42,7 @@ class Node():
         self.buffer = bytearray()
         self.outbuf = bytearray()
         self.peer = None
+        self.in_flight = []
         self.sendmsg(msgs.Version.make(self.address))
     def fileno(self):
         return self.socket.fileno()
@@ -70,9 +71,10 @@ class Node():
         bytessent = self.socket.send(self.outbuf)
         self.outbuf = self.outbuf[bytessent:]
     def wantswrite(self):
-        if self.initialized:
-            return not self.outbuf == b""
-        return False
+        if not self.initialized:
+            return False
+        self.wants_send()
+        return not self.outbuf == b""
     def readable(self):
         if not self.initialized:
             self.initialize()
@@ -93,21 +95,39 @@ class Node():
     def close(self):
         self.socket.close()
         raise NodeDisconnected()
+    
+    def wants_send(self):
+        "If you want to send a msg, do so"
+        while (len(self.in_flight) < status.MAX_IN_FLIGHT and
+                status.state.requestq):
+            print(len(status.state.requestq))
+            item = status.state.requestq.pop()
+            self.in_flight.append(item)
+            self.sendmsg(msgs.Getdata.make([item]))
     def handle_version(self, msg):
         if msg.version < 31900:
             self.close()
         if msg.sender == self.peer and msg.sender.port == PORT:
             pass #FIXME add to list of addresses
         self.sendmsg(msgs.Verack.make())
+        self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_verack(self, msg):
         self.active = True
         #self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
-        self.sendmsg(msgs.Getdata.make(msg.objs))
+        for obj in msg.objs:
+            if obj.objtype == TYPE_TX and obj.hash not in status.txs:
+                    status.state.requestq.appendleft(obj)
+            if obj.objtype == TYPE_BLOCK and obj.hash not in status.blocks:
+                    status.state.requestq.appendleft(obj)
+        # Test weather it is a full response to GetBlocks
     def handle_block(self, msg):
-        pass
+        protocol.add_block(msg)
+        iv = msgs.InvVect.make(TYPE_BLOCK, msg.block.hash)
+        if iv in self.in_flight:
+            self.in_flight.remove(iv)
     def handle_tx(self, msg):
         protocol.storetx(msg)
 

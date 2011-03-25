@@ -1,6 +1,6 @@
 """Contains the objects representing each message in the protocol
 Serialization is provided by the jserialize (for json) and bserialize (for the
-wire protocol)"""
+wire protocol) modules"""
 
 import struct
 import time
@@ -21,7 +21,7 @@ class Header():
         try:
             self.type = msgtable[data[0].rstrip(b'\x00').decode('ascii')]
         except (KeyError, UnicodeDecodeError):
-            print(data[0])
+            print("Bad message type", data[0])
             raise ProtocolViolation # Unrecognized message type
         self.len = data[1]
         if self.type.type not in ("version", "verack"):
@@ -35,6 +35,9 @@ class Header():
 
 HEADER_START = b"\xf9\xbe\xb4\xd9"
 HEADER_LEN = 20
+
+TYPE_TX = 1
+TYPE_BLOCK = 2
 
 def serialize(msg):
     data = msg.tobinary()
@@ -170,6 +173,12 @@ class InvVect(js.Entity, bs.Entity):
         ("objtype", bs.structfmt("<I")),
         ("hash", bs.Hash),
     ]
+    def __eq__(self, other):
+        if self.__class__ == other.__class__:
+            return self.hash == other.hash and self.objtype == other.objtype
+        return NotImplemented
+    def __hash__(self):
+        return hash(self.hash)
     @constructor
     def make(self, objtype, hash):
         self.objtype, self.hash = objtype, hash

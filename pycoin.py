@@ -15,7 +15,7 @@ try:
     status.state.version
 except:
     status.state.version = 0
-    status.state.orphan_dict = collections.defaultdict(list)
+    status.state.orphan_dict = collections.defaultdict(set)
     status.state.requestq = collections.deque()
     protocol.add_genesis()
 
@@ -30,4 +30,9 @@ status.localaddress = msgs.Address.make(IPAddress(gethostipaddress()), 8333)
 
 import bserialize as bs
 
-network.mainloop()
+try:
+    network.mainloop()
+finally:
+    # This must be done before the import machinery starts shutting down
+    # otherwise the pickle module might fail
+    status.state.close()

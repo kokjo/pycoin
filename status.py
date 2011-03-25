@@ -12,7 +12,9 @@ from ipaddr import IPAddress
 
 import jserialize as js
 
-class PersistantObject(shelve.DbfilenameShelf):
+import msgs
+
+class PersistantObject():
     def __init__(self, *args, **kwargs):
         object.__setattr__(self, "_shelf", shelve.DbfilenameShelf(
                 writeback = True, *args, **kwargs))
@@ -28,6 +30,8 @@ class PersistantObject(shelve.DbfilenameShelf):
             del self._shelf[name]
         except KeyError:
             raise AttributeError
+    def close(self):
+        self._shelf.close()
 
 datadir = os.path.join(os.environ["HOME"],".pycoin")
 if not os.path.exists(datadir):
@@ -43,3 +47,5 @@ genesisblock = js.Hash.fromjson('000000000019d6689c085ae165831e934ff763ae46a2a6c
 services = 1
 nonce = random.randrange(2**64)
 currentblock = 0
+
+MAX_IN_FLIGHT = 3

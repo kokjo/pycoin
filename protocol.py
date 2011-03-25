@@ -35,6 +35,9 @@ def storetx(tx):
 def _storeblock(blockaux):
     status.blocks[blockaux.block.hash] = blockaux.tobinary()
 
+def loadblockaux(hash):
+    return msgs.BlockAux.frombinary(status.blocks[hash])[0]
+
 def checktx(tx):
     return True # FIXME Implement checks
 
@@ -50,17 +53,39 @@ def add_genesis():
     blockaux.succ = nullhash
     status.blocks[blockaux.block.hash] = blockaux.tobinary()
 
-def add_block(block):
+def add_block(blockmsg):
+    block = blockmsg.block
     blockaux = msgs.BlockAux.make(block)
+    blockaux.txs = [tx.hash for tx in blockmsg.txs]
     # Tests that we don't need the previous block for
     if not (blockaux.txs and check_bits(block.bits, block.hash) and
             block.version == 1 and block.prev != nullhash and
-            block.get_merkle_root(blockaux.txs) == block.merkle):
+            get_merkle_root(blockaux.txs) == block.merkle):
         blockaux.invalid = True
+        _storeblock(blockaux)
         return
-    if not block.prev in status.blocks:
-        status.blocks[block.hash] = blockaux.tobinary()
-        status.orphan_dict[block.prev].append(block.hash)
+    if block.prev not in status.blocks:
+        _storeblock(blockaux)
+        status.state.orphan_dict[block.prev].add(block.hash)
         return
-    chain_block()
-    # FIXME chain subsequent blocks
+    _storeblock(blockaux)
+    chain_block(block.hash)
+
+def chain_block(hash):
+    print("Chaining:", js.Hash.tojson(hash))
+    blockaux = loadblockaux(hash)
+    block = blockaux.block
+    prevaux = msgs.BlockAux.frombinary(status.blocks[block.hash])[0]
+    prev = prevaux.block
+    if not (prev.bits == block.bits # FIXME difficulty adjustment
+        and prev.time < block.time and not prev.invalid):
+        blockaux.invalid = True
+        _storeblock(blockaux)
+        return
+    blockaux.number, blockaux.chained = prevaux.number, True
+    blockaux.totaldiff = prevaux.totaldiff + bits_to_diff(prev.bits)
+    prevaux.succ = block.hash
+    _storeblock(prevaux)
+    _storeblock(blockaux)
+    for blockhash in status.state.orphan_dict[block.hash]:
+        chain_block(blockhash)
