@@ -3,6 +3,7 @@ import socket
 import json
 import errno
 import select
+import weakref
 
 from socket import inet_aton, inet_ntoa, htons, ntohs, htonl, ntohl
 from socket import AF_INET, SOCK_STREAM
@@ -37,15 +38,21 @@ class Node():
         except socket.error as e:
             if e.args[0] == errno.ENOTCONN:
                 self.close() # No client at other end
+                return
             raise
         self.address = msgs.Address.make(peer[0], peer[1])
         self.buffer = bytearray()
         self.outbuf = bytearray()
-        self.peer = None
-        self.in_flight = []
-        self.sendmsg(msgs.Version.make(self.address))
+        self.on_init()
     def fileno(self):
         return self.socket.fileno()
+    def set_timer(self, when, func):
+        def do_timer(ref, func):
+            obj = ref()
+            if not obj:
+                return
+            func(obj)
+        timerq.add_event(when, lambda: do_timer(weakref.ref(self), func))
     def readmsg(self):
         start = self.buffer.find(HEADER_START)
         if start == -1:
@@ -90,30 +97,35 @@ class Node():
             return
         print("=======THEM=======")
         print(json.dumps(msg.tojson()))
-        #msg.tojson() == msg.__class__.fromjson(msg.tojson()).tojson()
         getattr(self, "handle_" + msg.type)(msg)
     def close(self):
+        self.on_close()
         self.socket.close()
+        nodes.remove(self)
         raise NodeDisconnected()
-    
+
+class StdNode(Node):
+    def on_init(self):
+        self.in_flight = set()
+        #self.set_timer(5, lambda self: self.close())
+        self.sendmsg(msgs.Version.make(self.address))
+    def on_close(self):
+        pass
     def wants_send(self):
         "If you want to send a msg, do so"
         while (len(self.in_flight) < status.MAX_IN_FLIGHT and
                 status.state.requestq):
             print(len(status.state.requestq))
             item = status.state.requestq.pop()
-            self.in_flight.append(item)
+            self.in_flight.add(item)
             self.sendmsg(msgs.Getdata.make([item]))
     def handle_version(self, msg):
         if msg.version < 31900:
             self.close()
-        if msg.sender == self.peer and msg.sender.port == PORT:
-            pass #FIXME add to list of addresses
         self.sendmsg(msgs.Verack.make())
-        self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_verack(self, msg):
         self.active = True
-        #self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
+        self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
@@ -126,8 +138,7 @@ class Node():
     def handle_block(self, msg):
         protocol.add_block(msg)
         iv = msgs.InvVect.make(TYPE_BLOCK, msg.block.hash)
-        if iv in self.in_flight:
-            self.in_flight.remove(iv)
+        self.in_flight.discard(iv)
     def handle_tx(self, msg):
         protocol.storetx(msg)
 
@@ -140,16 +151,18 @@ def mainloop():
         waitfor = timerq.wait_for()
         readable, writable, _ = select.select(nodes, writenodes, [], waitfor)
         timerq.do_events()
-        for node in nodes:
+        for node in readable:
             try:
-                if node in readable:
-                    node.readable()
-                if node in writable:
-                    node.writable()
+                node.readable()
             except NodeDisconnected:
-                nodes.remove(node)
+                pass
+        for node in writable:
+            try:
+                node.writable()
+            except NodeDisconnected:
+                pass
 
 nodes = [
-    Node('64.22.103.150'),
-    Node('240.1.1.1'), # Unallocated by IANA, will fail to connect
+    StdNode('64.22.103.150'),
+    StdNode('240.1.1.1'), # Unallocated by IANA, will fail to connect
 ]

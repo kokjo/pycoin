@@ -2,6 +2,8 @@ import time
 import heapq
 import itertools
 
+import network
+
 _timers = []
 counter = itertools.count()
 
@@ -13,7 +15,10 @@ def add_event_abs(when, func):
 
 def do_events():
     while _timers and _timers[0][0] < time.time():
-        heapq.heappop(_timers)[2]()
+        try:
+            heapq.heappop(_timers)[2]()
+        except network.NodeDisconnected:
+            pass 
 
 def wait_for():
     if not _timers:
