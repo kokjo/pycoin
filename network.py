@@ -52,7 +52,7 @@ class Node():
             node = ref()
             if not node or node.socket.closed():
                 return
-            func(obj)
+            func(node)
         timerq.add_event(when, lambda: do_timer(weakref.ref(self), func))
     def readmsg(self):
         start = self.buffer.find(HEADER_START)
