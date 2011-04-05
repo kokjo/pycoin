@@ -19,17 +19,11 @@ class PersistantObject():
         object.__setattr__(self, "_shelf", shelve.DbfilenameShelf(
                 writeback = True, *args, **kwargs))
     def __getattr__(self, name):
-        try:
-            return self._shelf[name]
-        except KeyError:
-            raise AttributeError
+        return self._shelf[name]
     def __setattr__(self, name, value):
         self._shelf[name] = value
     def __delattr__(self, name):
-        try:
-            del self._shelf[name]
-        except KeyError:
-            raise AttributeError
+        del self._shelf[name]
     def close(self):
         self._shelf.close()
 

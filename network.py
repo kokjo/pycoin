@@ -5,14 +5,15 @@ import errno
 import select
 import weakref
 
-from socket import inet_aton, inet_ntoa, htons, ntohs, htonl, ntohl
 from socket import AF_INET, SOCK_STREAM
+from ipaddr import IPAddress
 
 import msgs
 import storage
 import protocol
 import status
 import timerq
+import requestq
 
 from msgs import HEADER_LEN, HEADER_START, TYPE_TX, TYPE_BLOCK
 from utils import *
@@ -40,7 +41,7 @@ class Node():
                 self.close() # No client at other end
                 return
             raise
-        self.address = msgs.Address.make(peer[0], peer[1])
+        self.peer_address = msgs.Address.make(IPAddress(peer[0]), peer[1])
         self.buffer = bytearray()
         self.outbuf = bytearray()
         self.on_init()
@@ -108,17 +109,18 @@ class StdNode(Node):
     def on_init(self):
         self.in_flight = set()
         #self.set_timer(5, lambda self: self.close())
-        self.sendmsg(msgs.Version.make(self.address))
+        self.sendmsg(msgs.Version.make(self.peer_address))
     def on_close(self):
         pass
     def wants_send(self):
         "If you want to send a msg, do so"
-        while (len(self.in_flight) < status.MAX_IN_FLIGHT and
-                status.state.requestq):
+        while (len(self.in_flight) < status.MAX_IN_FLIGHT):
             print(len(status.state.requestq))
-            item = status.state.requestq.pop()
-            self.in_flight.add(item)
-            self.sendmsg(msgs.Getdata.make([item]))
+            iv = requestq.pop(self.peer_address)
+            if not iv: # None indicates not suitable requests pending
+                break
+            self.in_flight.add(iv)
+            self.sendmsg(msgs.Getdata.make([iv]))
     def handle_version(self, msg):
         if msg.version < 31900:
             self.close()

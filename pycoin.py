@@ -10,13 +10,11 @@ from utils import *
 import network
 import msgs
 import protocol
-
 try:
     status.state.version
 except:
     status.state.version = 0
     status.state.orphan_dict = collections.defaultdict(set)
-    status.state.requestq = collections.deque()
     protocol.add_genesis()
 
 def gethostipaddress():

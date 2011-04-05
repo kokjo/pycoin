@@ -64,10 +64,7 @@ class Address(js.Entity, bs.Entity):
     @constructor
     def make(self, ip, port):
         self.services = 1 # Always 1 in current protocol
-        if isinstance(ip, IPv4Address):
-            self.ip = ip
-        else:
-            self.ip = IPAddress(ip)
+        self.ip = ip
         self.port = port
 
 class Version(js.Entity, bs.Entity):
