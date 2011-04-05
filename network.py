@@ -5,7 +5,7 @@ import errno
 import select
 import weakref
 
-from socket import AF_INET, SOCK_STREAM
+from socket import AF_INET, SOCK_STREAM, SHUT_RDWR
 from ipaddr import IPAddress
 
 import msgs
@@ -49,8 +49,8 @@ class Node():
         return self.socket.fileno()
     def set_timer(self, when, func):
         def do_timer(ref, func):
-            obj = ref()
-            if not obj:
+            node = ref()
+            if not node or node.socket.closed():
                 return
             func(obj)
         timerq.add_event(when, lambda: do_timer(weakref.ref(self), func))
@@ -101,6 +101,7 @@ class Node():
         getattr(self, "handle_" + msg.type)(msg)
     def close(self):
         self.on_close()
+        self.socket.shutdown(SHUT_RDWR)
         self.socket.close()
         nodes.remove(self)
         raise NodeDisconnected()
