@@ -42,10 +42,11 @@ TYPE_BLOCK = 2
 def serialize(msg):
     data = msg.tobinary()
     if msg.type not in ("version", "verack"):
-        return struct.pack("<4s12sI4s", HEADER_START, msg.type, len(data),
-            checksum(data)[:4]) + data
+        return struct.pack("<4s12sI4s", HEADER_START,
+            msg.type.encode('ascii'), len(data), checksum(data)[:4]) + data
     else: # No checksum in version and verack
-        return struct.pack("<4s12sI", HEADER_START, msg.type, len(data)) + data
+        return struct.pack("<4s12sI", HEADER_START, msg.type.encode('ascii'),
+            len(data)) + data
 
 def checksum(bdata):
     return doublesha(bdata)[:4]

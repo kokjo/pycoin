@@ -1,5 +1,6 @@
 import status
 import msgs
+import requestq
 import jserialize as js
 
 from utils import *
@@ -64,11 +65,12 @@ def add_block(blockmsg):
         blockaux.invalid = True
         _storeblock(blockaux)
         return
-    if block.prev not in status.blocks:
-        _storeblock(blockaux)
+    _storeblock(blockaux)
+    if block.prev in status.state.orphan_dict:
         status.state.orphan_dict[block.prev].add(block.hash)
         return
-    _storeblock(blockaux)
+    if block.prev not in status.blocks:
+        return #FIXME Add an "are we requesting this block" test
     chain_block(block.hash)
 
 def chain_block(hash):
@@ -77,15 +79,17 @@ def chain_block(hash):
     block = blockaux.block
     prevaux = msgs.BlockAux.frombinary(status.blocks[block.hash])[0]
     prev = prevaux.block
+    assert prevaux.chained
     if not (prev.bits == block.bits # FIXME difficulty adjustment
         and prev.time < block.time and not prev.invalid):
         blockaux.invalid = True
         _storeblock(blockaux)
         return
-    blockaux.number, blockaux.chained = prevaux.number, True
+    blockaux.number, blockaux.chained = prevaux.number + 1, True
     blockaux.totaldiff = prevaux.totaldiff + bits_to_diff(prev.bits)
     prevaux.succ = block.hash
     _storeblock(prevaux)
     _storeblock(blockaux)
     for blockhash in status.state.orphan_dict[block.hash]:
+        #FIXME You can't recurse like this in python
         chain_block(blockhash)

@@ -50,7 +50,9 @@ class Node():
     def set_timer(self, when, func):
         def do_timer(ref, func):
             node = ref()
-            if not node or node.socket.closed():
+            try:
+                node.socket.getpeername()
+            except socket.error:
                 return
             func(node)
         timerq.add_event(when, lambda: do_timer(weakref.ref(self), func))
@@ -72,7 +74,7 @@ class Node():
         self.buffer = self.buffer[header.len + HEADER_LEN:]
         return header.deserialize(body)
     def sendmsg(self, msg):
-        print("========US========")
+        print("=======US (", self.peer_address.ip, ")=======", sep='')
         print(msg.tojson())
         self.outbuf.extend(msgs.serialize(msg))
     def writable(self):
@@ -96,12 +98,15 @@ class Node():
             self.close()
         if msg == None:
             return
-        print("=======THEM=======")
+        print("=======THEM (", self.peer_address.ip, ")=======", sep='')
         print(json.dumps(msg.tojson()))
         getattr(self, "handle_" + msg.type)(msg)
     def close(self):
         self.on_close()
-        self.socket.shutdown(SHUT_RDWR)
+        try:
+            self.socket.shutdown(SHUT_RDWR)
+        except socket.error:
+            pass # There is no guarantee that we were ever connected
         self.socket.close()
         nodes.remove(self)
         raise NodeDisconnected()
@@ -112,23 +117,30 @@ class StdNode(Node):
         #self.set_timer(5, lambda self: self.close())
         self.sendmsg(msgs.Version.make(self.peer_address))
     def on_close(self):
-        pass
+        for iv in in_flight:
+            requestq.no_reply(self.peer_address.ip, iv, failed=False)
     def wants_send(self):
         "If you want to send a msg, do so"
         while (len(self.in_flight) < status.MAX_IN_FLIGHT):
             print(len(status.state.requestq))
             iv = requestq.pop(self.peer_address)
-            if not iv: # None indicates not suitable requests pending
+            if not iv: # None indicates no suitable requests pending
                 break
             self.in_flight.add(iv)
             self.sendmsg(msgs.Getdata.make([iv]))
+            self.set_timer(1.5, lambda self: self.not_recieved(iv))
+    def not_recieved(self, iv):
+        if iv in self.in_flight:
+            self.in_flight.discard(iv)
+            requestq.no_reply(self.peer_address.ip, iv, failed=True)
+            print("No reply", iv.hash)
     def handle_version(self, msg):
         if msg.version < 31900:
             self.close()
         self.sendmsg(msgs.Verack.make())
     def handle_verack(self, msg):
         self.active = True
-        self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
+        #self.sendmsg(msgs.Getblocks.make([status.genesisblock]))
     def handle_addr(self, msg):
         storage.storeaddrs(msg.addrs)
     def handle_inv(self, msg):
@@ -141,8 +153,10 @@ class StdNode(Node):
     def handle_block(self, msg):
         protocol.add_block(msg)
         iv = msgs.InvVect.make(TYPE_BLOCK, msg.block.hash)
+        requestq.got_item(iv)
         self.in_flight.discard(iv)
     def handle_tx(self, msg):
+        #FIXME Should we add proper requestq support?
         protocol.storetx(msg)
 
 class NodeDisconnected(BaseException): pass
@@ -152,6 +166,7 @@ def mainloop():
     while True:
         writenodes = [node for node in nodes if node.wantswrite()]
         waitfor = timerq.wait_for()
+        #print(nodes, writenodes)
         readable, writable, _ = select.select(nodes, writenodes, [], waitfor)
         timerq.do_events()
         for node in readable:
@@ -166,6 +181,6 @@ def mainloop():
                 pass
 
 nodes = [
-    StdNode('64.22.103.150'),
+    StdNode('184.106.111.41'),
     StdNode('240.1.1.1'), # Unallocated by IANA, will fail to connect
 ]

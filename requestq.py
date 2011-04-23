@@ -9,14 +9,17 @@ except:
     requestq = collections.deque()
     status.state.requestq = requestq
 
-# No point maintaining this beyond
+# No point maintaining this through application restart
 failed_requests = collections.defaultdict(set)
+in_transit = set()
 
 def add(iv):
     requestq.appendleft(iv)
+    in_transit.add(iv)
 
 def add_lots(ivs):
     requestq.extendleft(ivs)
+    in_transit.update(ivs)
 
 def pop(ip):
     "Return a suitable request iv for this ip, None otherwise"
@@ -38,3 +41,7 @@ def no_reply(ip, iv, failed):
     requestq.append(iv)
     if failed:
         failed_requests[iv].add(ip)
+
+def got_item(iv):
+    in_transit.discard(iv)
+    failed_requests.pop(iv, None)
