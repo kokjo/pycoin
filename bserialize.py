@@ -14,8 +14,8 @@ Throws ProtocolViolation when fed junk.
 from utils import ProtocolViolation
 
 import struct
-
-class Entity():
+from socket import inet_ntoa, inet_aton
+class Entity(object):
     """
 Each Entity subclass has a class variable called bfields, which is list of
 tuples contained as fieldname and a serialization class.
@@ -48,8 +48,10 @@ def structfmt(fmt):
     """Produce a serialization object for a value understood by struct.
 e.g. structfmt("<I") for 4-byte integers"""
     class Foo():
+        @staticmethod
         def tobinary(obj):
             return struct.pack(fmt, obj)
+        @staticmethod
         def frombinary(bdata):
             try:
                 return struct.unpack(fmt, bdata[:struct.calcsize(fmt)])[0], bdata[struct.calcsize(fmt):]
@@ -58,8 +60,10 @@ e.g. structfmt("<I") for 4-byte integers"""
     return Foo
 
 class Str():
+    @staticmethod
     def tobinary(obj):
         return obj.encode("ascii") + b'\0'
+    @staticmethod
     def frombinary(bdata):
         bytes, ch, bdata = bdata.partition(b'\0')
         if ch == b'':
@@ -72,18 +76,20 @@ class Str():
 Hash = structfmt("<32s")
 
 class VarInt():
+    @staticmethod
     def frombinary(bdata):
         try:
-            if bdata[0] <= 0xfc:
-                return bdata[0], bdata[1:]
-            if bdata[0] == 0xfd:
+            if ord(bdata[0]) <= 0xfc:
+                return ord(bdata[0]), bdata[1:]
+            if ord(bdata[0]) == 0xfd:
                 return struct.unpack("<xH", bdata[:3])[0], bdata[3:]
-            if bdata[0] == 0xfe:
+            if ord(bdata[0]) == 0xfe:
                 return struct.unpack("<xI", bdata[:5])[0], bdata[5:]
-            if bdata[0] == 0xff:
+            if ord(bdata[0]) == 0xff:
                 return struct.unpack("<xQ", bdata[:9])[0], bdata[9:]
         except (struct.error, IndexError):
             raise ProtocolViolation
+    @staticmethod
     def tobinary(int):
         if int <= 0xfc:
             return struct.pack("<B", int)
@@ -96,6 +102,7 @@ class VarInt():
 
 def VarList(ty):
     class _():
+        @staticmethod
         def frombinary(bdata):
             num, bdata = VarInt.frombinary(bdata)
             retval = []
@@ -103,26 +110,30 @@ def VarList(ty):
                 item, bdata = ty.frombinary(bdata)
                 retval.append(item)
             return retval, bdata
+        @staticmethod
         def tobinary(obj):
             return VarInt.tobinary(len(obj)) + b"".join((ty.tobinary(x) for x in obj))
     return _
 
 class VarBytes():
+    @staticmethod
     def frombinary(bdata):
         num, bdata = VarInt.frombinary(bdata)
         if len(bdata) < num:
             raise ProtocolViolation
         return bdata[:num], bdata[num:]
+    @staticmethod
     def tobinary(obj):
         return VarInt.tobinary(len(obj)) + obj
 
 class IPv4Inv6():
+    @staticmethod
     def frombinary(bdata):
-        import ipaddr
         try:
-            obj, bdata = structfmt("!12xI").frombinary(bdata)
+            obj, bdata = structfmt("!12x4s").frombinary(bdata)
         except struct.error:
             raise ProtocolViolation
-        return ipaddr.IPv4Address(obj), bdata
+        return inet_ntoa(obj), bdata
+    @staticmethod
     def tobinary(object):
-        return struct.pack("!10xHI", 2**16-1, int(object))
+        return struct.pack("!10xH4s", 2**16-1, inet_aton(object))

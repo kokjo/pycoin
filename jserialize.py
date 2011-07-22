@@ -1,28 +1,24 @@
 import binascii
 
-from utils import ProtocolViolation
-
-def constructor(func):
-    @classmethod
-    def f(cls, *args):
-        self = cls.__new__(cls)
-        func(self, *args)
-        return self
-    return f
+from utils import ProtocolViolation, constructor
 
 class Bytes():
+    @staticmethod
     def tojson(obj):
         return binascii.hexlify(obj).decode("ascii")
+    @staticmethod
     def fromjson(json):
         return binascii.unhexlify(json.encode("ascii"))
 
 class Hash():
+    @staticmethod
     def tojson(obj):
-        return binascii.hexlify(bytes(reversed(obj))).decode("ascii")
+        return obj[::-1].encode("hex")
+    @staticmethod
     def fromjson(json):
-        return bytes(reversed((binascii.unhexlify(json.encode("ascii")))))
+        return json.decode("hex")[::-1]
 
-class Entity():
+class Entity(object):
     def tojson(self):
         retval = {}
         for (field, type) in self.fields.items():
@@ -35,8 +31,10 @@ class Entity():
 
 def alreadyjson(type):
     class Foo():
+        @staticmethod
         def tojson(object):
             return object
+        @staticmethod
         def fromjson(json):
             return json
     return Foo
@@ -49,8 +47,10 @@ Bool = alreadyjson(bool)
 
 def List(type):
     class _List():
+        @staticmethod
         def tojson(self):
             return [type.tojson(x) for x in self]
+        @staticmethod
         def fromjson(json):
             return [type.fromjson(x) for x in json]
     return _List
@@ -59,6 +59,7 @@ def Dict(ktype, vtype):
     class _Dict():
         def tojson(self):
             return dict(((ktype.tojson(k), vtype.tojson(v)) for (k, v) in self.items()))
+        @staticmethod
         def fromjson(json):
             return dict(((ktype.fromjson(k), vtype.fromjson(v)) for (k, v) in json.items()))
     return _Dict
@@ -67,11 +68,10 @@ def Dict(ktype, vtype):
 
 #This isn't technically a stdlib module
 class IPv4():
+    @staticmethod
     def tojson(obj):
-        import ipaddr
-        assert obj.__class__ == ipaddr.IPv4Address
         return str(obj)
+    @staticmethod
     def fromjson(object):
-        import ipaddr
-        return ipaddr.IPv4Address(object)
+        return object
 

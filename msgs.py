@@ -10,46 +10,38 @@ import binhex
 import jserialize as js
 import bserialize as bs
 
-from ipaddr import IPAddress, IPv4Address
-
 from utils import *
-import status
-
-class Header():
-    def __init__(self, data):
-        data = struct.unpack("<4x12sI", data)
-        try:
-            self.type = msgtable[data[0].rstrip(b'\x00').decode('ascii')]
-        except (KeyError, UnicodeDecodeError):
-            print("Bad message type", data[0])
-            raise ProtocolViolation # Unrecognized message type
-        self.len = data[1]
-        if self.type.type not in ("version", "verack"):
-            self.len += 4 # Compensate for lack of checksum
-    def deserialize(self, data):
-        if self.type.type in ("version", "verack"):
-            return self.type.frombinary(data)[0]
-        else:
-            return self.type.frombinary(data[4:])[0]
-    __repr__ = simplerepr
-
-HEADER_START = b"\xf9\xbe\xb4\xd9"
-HEADER_LEN = 20
+MAGIC_MAINNET = 0xd9b4bef9
 
 TYPE_TX = 1
 TYPE_BLOCK = 2
-
-def serialize(msg):
-    data = msg.tobinary()
-    if msg.type not in ("version", "verack"):
-        return struct.pack("<4s12sI4s", HEADER_START,
-            msg.type.encode('ascii'), len(data), checksum(data)[:4]) + data
-    else: # No checksum in version and verack
-        return struct.pack("<4s12sI", HEADER_START, msg.type.encode('ascii'),
-            len(data)) + data
-
-def checksum(bdata):
-    return doublesha(bdata)[:4]
+    
+class Header():
+    def __init__(self, data, magic=MAGIC_MAINNET):
+        self.magic, self.cmd, self.len = struct.unpack("<L12sL", data)
+        if self.magic != magic:
+            raise ProtocolViolation("wrong magic") # Client shutdown
+        self.cmd = self.cmd.strip("\x00")
+        try:
+            self.type = msgtable[self.cmd]
+        except KeyError:
+            print "??",self.cmd
+            raise ProtocolViolation # Unrecognized message type
+        if self.cmd not in ("version", "verack"):
+            self.len += 4
+    def deserialize(self, data):
+        if self.cmd not in ("version", "verack"):
+            self.cksum, data = data[:4], data[4:]
+            if self.cksum != checksum(data):
+                raise ProtocolViolation
+        return self.type.frombinary(data)[0]
+    @staticmethod
+    def serialize(msg, magic=MAGIC_MAINNET):
+        data = msg.tobinary()
+        if msg.type not in ("version", "verack"):
+            return struct.pack("<L12sL4s", magic, msg.type.encode('ascii'), len(data), checksum(data)[:4]) + data
+        else: # No checksum in version and verack
+            return struct.pack("<L12sL", magic, msg.type.encode('ascii'), len(data)) + data   
 
 class Address(js.Entity, bs.Entity):
     fields = {
@@ -92,15 +84,15 @@ class Version(js.Entity, bs.Entity):
         ("finalblock", bs.structfmt("<I")),
     ]
     @constructor
-    def make(self, reciever):
-        self.version = status.protocolversion
-        self.services = status.services
+    def make(self, version=31901, sender=Address.make("0.0.0.0",0), reciever=None):
+        self.version = version
+        self.services = 1
         self.time = int(time.time())
-        self.sender = status.localaddress
+        self.sender = sender
         self.reciever = reciever
-        self.nonce = status.nonce
+        self.nonce = 1234134124
         self.subverinfo = ""
-        self.finalblock = status.currentblock
+        self.finalblock = 1
 
 class Verack(js.Entity, bs.Entity):
     type = "verack"
@@ -307,32 +299,7 @@ class Blockmsg(js.Entity, bs.Entity):
         ("txs", bs.VarList(Tx)),
     ]
 
-class BlockAux(js.Entity, bs.Entity):
-    fields = {
-        "block":Block,
-        "txs":js.List(js.Hash),
-        "number":js.Int,
-        "totaldiff":js.Int,
-        "invalid":js.Bool,
-        "mainchain":js.Bool,
-        "chained":js.Bool,
-        "succ": js.Hash,
-    }
-    bfields = [
-        ("block", Block),
-        ("txs", bs.VarList(bs.Hash)),
-        ("number", bs.structfmt("<I")),
-        ("totaldiff", bs.structfmt("<Q")),
-        ("invalid", bs.structfmt("<?")),
-        ("mainchain", bs.structfmt("<?")),
-        ("chained", bs.structfmt("<?")),
-        ("succ", bs.Hash),
-    ]
-    @constructor
-    def make(self, block):
-        self.block, self.txs, self.number = block, [], 2**32-1
-        self.totaldiff, self.invalid, self.mainchain = 0, False, False
-        self.chained, self.succ = False, nullhash
+
 
 msgtable = {
     'version':Version,

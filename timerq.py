@@ -1,29 +1,30 @@
 import time
 import heapq
-import itertools
+import traceback
 
-import network
-
-_timers = []
-counter = itertools.count()
-
-def add_event(when, func):
-    add_event_abs(when + time.time(), func)
-
-def add_event_abs(when, func):
-    heapq.heappush(_timers, (when, next(counter), func))
-
-def do_events():
-    while _timers and _timers[0][0] < time.time():
-        try:
-            heapq.heappop(_timers)[2]()
-        except network.NodeDisconnected:
-            pass 
-
-def wait_for():
-    if not _timers:
-        return 2**32-1
-    elif _timers[0][0] < time.time():
-        return 0
-    else:
-        return _timers[0][0] - time.time()
+class Timerq:
+    def __init__(self, waittime=10):
+        self._timers = []
+        self.waittime = 10
+    
+    def add_event(self, timeout, func):
+        return self.add_event_abs(timeout + time.time(), func)
+    
+    def add_event_abs(self, when, func):
+        heapq.heappush(self._timers, (when, func))
+        return (when, func)
+        
+    def cancel_event(self, event):
+        self._timers.remove(event)
+        
+    def do_events(self):
+        while self._timers and self._timers[0][0] < time.time():
+            heapq.heappop(self._timers)[1]()
+            
+    def wait_for(self):
+        if not self._timers:
+            return self.waittime
+        elif self._timers[0][0] < time.time():
+            return 0
+        else:
+            return self._timers[0][0] - time.time() 
