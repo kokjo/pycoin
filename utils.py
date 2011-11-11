@@ -35,21 +35,38 @@ def check_bits(bits, hash):
         return True
     return False
 
-def get_merkle_root(tree):
-    def pair_up(hashes):
-        if len(hashes) % 2 == 0:
-            return zip(*[iter(hashes)]*2)
-        else:
-            return list(zip(*[iter(hashes)]*2)) + [(hashes[-1], "")]
-    while len(tree) > 1:
-        tree = [doublesha(''.join(pair)) for pair in pair_up(tree)]
-    return tree[0]
+def pair_up(hashes):
+    if len(hashes) % 2 == 0:
+        return zip(*[iter(hashes)]*2)
+    else:
+        return list(zip(*[iter(hashes)]*2)) + [(hashes[-1], "")]
+            
+def get_merkle_root(hashs):
+    while len(hashs) > 1:
+        hashs = [doublesha(''.join(pair)) for pair in pair_up(hashs)]
+    return hashs[0]
+
+def get_merkel_tree(hashs, hash_leaf):
+    tree = []
+    while len(hashs) > 1:
+        hashs2 = []
+        for pair in pair_up(hashs):
+            hashs2.append(doublesha(''.join(pair)))
+            if hash_leaf in pair:
+                tree.append(pair)
+                hash_leaf = hashs2[-1]
+        hashs = hashs2
+    return tree
+            
     
 def doublesha(data):
     return sha256(sha256(data).digest()).digest()
 
 def checksum(bdata):
     return doublesha(bdata)[:4]
-    
+
+def h2h(h):
+    return h[::-1].encode("hex")
+        
 nullhash = "\x00"*32
 blockreward = 5000000000

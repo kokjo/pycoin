@@ -10,6 +10,9 @@ import genesisblock
 import time
 import bsddb
 import random
+import logging
+import debug
+LOG = logging.getLogger("pycoin.network")
 
 class NodeDisconnected(Exception):
     def __init__(self, reason=""):
@@ -33,7 +36,6 @@ class Node:
         return self.outbuf != ""
         
     def sendmsg(self, msg):
-        #print msg.tojson()
         self.outbuf += msgs.Header.serialize(msg)
     
     def init(self):
@@ -107,9 +109,11 @@ class BitcoinNode(Node):
         Node.__init__(self, *args, **kwargs)
         self.server = server
         self.active = False
+        self.peer_address = msgs.Address.make("0.0.0.0", 8333)
+        self.sendmsg(msgs.Version.make(sender=self.server.address, reciever=self.peer_address))
     
     def on_init(self):
-        self.sendmsg(msgs.Version.make(sender=self.server.address, reciever=self.peer_address))
+        pass
     
     def on_close(self, reason):
         pass
@@ -122,19 +126,12 @@ class BitcoinNode(Node):
     def handle_verack(self, msg):
         self.active = True
         self.server.node_connected(self)
-        
-    def handle_addr(self, msg):
-        self.server.handle_addr(self, msg)
-    def handle_inv(self, msg):
-        self.sendmsg(msgs.Getdata.make(msg.objs))
-    def handle_tx(self, msg):
-        self.server.handle_tx(self, msg)
 
 class BitcoinServer:
-    def __init__(self, listen_sock=None, hosts=[], txs={}, blocks={}):
+    def __init__(self, listen_sock=None, hosts=[], txs={}, chain=None):
         self.nodes = []
         self.txs = txs
-        self.blocks = blocks
+        self.chain = chain
         if listen_sock:
             self.listeners = [listen_sock]
         else:
@@ -143,12 +140,18 @@ class BitcoinServer:
         self.timers = timerq.Timerq()
         self.address = msgs.Address.make("127.0.0.1",8333)
         for h in map(lambda h: (h, 8333), hosts):
-            self.check_host(h) 
-            
+            self.check_host(h)
+        self.timers.add_event(15, self.search_for_missing_blocks)
+        self.timers.add_event(30, self.sync_dbs)
+    def sync_dbs(self):
+        self.chain.chain.sync()
+        self.chain.txs.sync()
+        self.timers.add_event(30, self.sync_dbs)
     def serve_forever(self):
         while self.nodes:
             want_write = filter(lambda n: n.want_write(), self.nodes)
             read, write, _ = select.select(self.nodes+self.listeners, want_write, [], self.timers.wait_for())
+            self.timers.do_events()
             for n in read:
                 if n in self.listeners:
                     sock = n.accept()[0]
@@ -167,6 +170,7 @@ class BitcoinServer:
                     self.nodes.remove(n)
                     
     def node_connected(self, node):
+        LOG.info("connected to %s", node.peer_address.ip)
         node.sendmsg(msgs.Getaddr.make())
         
     def handle_addr(self, node, msg):
@@ -192,49 +196,48 @@ class BitcoinServer:
                     msg = msgs.Tx.frombinary(self.txs[obj.hash])[0]
                     node.sendmsg(msg)
                     
+    def search_for_missing_blocks(self):
+        self.sendrandom(msgs.Getblocks.make([self.chain.bestblock.hash]))
+        for blk in self.chain.missing_blocks:
+            self.sendrandom(msgs.Getdata.make([msgs.InvVect.make(msgs.TYPE_BLOCK, blk)]))
+        self.timers.add_event(5, self.search_for_missing_blocks)
+        
     def broadcast(self, msg):
         for node in self.nodes:
             node.sendmsg(msg)
             
-    def check_tx(self, node, tx_hash):
-        if tx_hash not in self.txs:
-            pass
+    def handle_inv(self, node, msg):
+        for i in msg.objs:
+            if i.objtype == msgs.TYPE_BLOCK:
+                if self.chain.has_block(i.hash):
+                    continue
+            self.sendrandom(msgs.Getdata.make([i]))
             
     def sendrandom(self, msg):
-        random.choice(filter(lambda n: n.active, self.nodes)).sendmsg(msg)
-        
-    def check_block(self, node, block_hash):
-        if block_hash not in self.blocks:
-            print "missing block:%s fetching" % block_hash[::-1].encode("hex")
-            msg = msgs.Getdata.make([msgs.InvVect.make(msgs.TYPE_BLOCK, block_hash)])
-            self.sendrandom(msg)
+        active_nodes = filter(lambda n: n.active, self.nodes)
+        if not active_nodes:
+            LOG.debug("no nodes connected, not sending %s", msg.type)
+            return
+        node = random.choice(active_nodes)
+        LOG.debug("sending a %s to %s", msg.type, node.peer_address.ip)
+        node.sendmsg(msg)
             
     def handle_block(self, node, msg):
-        if msg.block.hash not in self.blocks:
-            aux = msgs.BlockAux.make(msg)
-            self.blocks[aux.block.hash] = aux.tobinary()
-            self.blocks.sync()
-            self.check_block(node, aux.block.prev)
-            for tx in msg.txs:
-                self.handle_tx(node, tx)
-            print "block: %s" % msg.block.hash[::-1].encode("hex")
-
+        self.chain.add_block(msg)
+        inv = msgs.Inv.make([msgs.InvVect.make(msgs.TYPE_BLOCK, msg.block.hash)])
+        self.broadcast(inv)
+        
     def handle_tx(self, node, msg):
-        if msg.hash not in self.txs:
-            self.txs[msg.hash] = msg.tobinary()
-            self.txs.sync()
-            for tx_in in msg.inputs:
-                 self.check_tx(node, tx_in.outpoint.tx)
-            out_sum = sum(map(lambda x: x.amount, msg.outputs))
-            #print "tx: %s - %d" % (msg.hash[::-1].encode("hex"), out_sum)
+        self.chain.add_tx(msg)
+        inv = msgs.Inv.make([msgs.InvVect.make(msgs.TYPE_TX, msg.hash)])
+        self.broadcast(inv)
             
-            inv = msgs.Inv.make([msgs.InvVect.make(msgs.TYPE_TX, msg.hash)])
-            self.broadcast(inv)
-            
-hosts = ["127.0.0.1", "2.107.239.140", "46.4.121.102", "67.164.37.225", "66.94.195.139", "24.99.68.115", "24.253.68.233", "50.89.218.105"]
+hosts = ["127.0.0.1"]
 if __name__ == "__main__":
-    txs = bsddb.btopen("tx.db")
-    blocks = bsddb.btopen("block.db")
-    server = BitcoinServer(hosts=hosts, txs=txs, blocks=blocks)
+    import blockchain
+
+    logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
+    chain = blockchain.BlockChain()
+    server = BitcoinServer(hosts=hosts, chain=chain)
     server.serve_forever()
         

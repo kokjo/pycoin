@@ -84,9 +84,9 @@ class Version(js.Entity, bs.Entity):
         ("finalblock", bs.structfmt("<I")),
     ]
     @constructor
-    def make(self, version=31901, sender=Address.make("0.0.0.0",0), reciever=None):
+    def make(self, version=31900, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0)):
         self.version = version
-        self.services = 1
+        self.services = 0
         self.time = int(time.time())
         self.sender = sender
         self.reciever = reciever
@@ -250,22 +250,6 @@ class Tx(js.Entity, bs.Entity):
     def hash(self):
         return doublesha(self.tobinary())
 
-class TxAux(js.Entity, bs.Entity):
-    fields = {
-        "tx":Tx,
-        "block":js.Hash,
-        "redeemed":js.List(js.Hash),
-    }
-    bfields = [
-        ("tx", Tx),
-        ("block", bs.Hash),
-        ("redeemed", bs.VarList(bs.Hash)),
-    ]
-    @constructor
-    def make(self, tx):
-        self.tx, self.block = tx, nullhash
-        self.redeemed = [nullhash] * len(tx.outputs)
-
 class Block(js.Entity, bs.Entity):
     fields = {
         "version":js.Int,
@@ -286,7 +270,32 @@ class Block(js.Entity, bs.Entity):
     @cachedproperty
     def hash(self):
         return doublesha(self.tobinary())
-
+        
+class merkelproof(js.Entity, bs.Entity):
+    bfields = [
+        ("pairs", bs.VarList(bs.structfmt("<32s32s"))),
+        ("leaf", bs.Hash),
+        ("block", bs.Hash),
+    ]
+    @constructor
+    def make(self, block, tx):
+        self.block = block.hash
+        self.leaf = tx.hash
+        self.pairs = utils.get_merkel_tree(block.txs, tx.hash)
+        
+    @cachedproperty
+    def merkelroot(self):
+        return doublesha("".join(self.pairs[-1]))
+        
+    @cachedproperty
+    def valid(self, n):
+        leaf = self.leaf
+        for pair in pairs:
+            if leaf not in pair:
+                return False
+            leaf = doublesha("".join(pair))
+        return True
+        
 class Blockmsg(js.Entity, bs.Entity):
     type = "block"
     fields = {
@@ -298,8 +307,6 @@ class Blockmsg(js.Entity, bs.Entity):
         ("block", Block),
         ("txs", bs.VarList(Tx)),
     ]
-
-
 
 msgtable = {
     'version':Version,
