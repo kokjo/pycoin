@@ -11,7 +11,7 @@ import time
 import bsddb
 import random
 import logging
-import debug
+#import debug
 LOG = logging.getLogger("pycoin.network")
 
 class NodeDisconnected(Exception):
@@ -43,7 +43,7 @@ class Node:
             peer_addr = self.socket.getpeername() 
         except:
             self.close("never connected")
-        self.peer_address = msgs.Address.make(peer_addr[0], peer_addr[1])
+        self.peer_address = msgs.Address.make(*peer_addr)
         self.connected = True
         self.on_init()
                 
@@ -72,9 +72,9 @@ class Node:
             self.close("peer shutdown")
         self.inbuf += data
         if not self.hdr:
-            if len(self.inbuf) >= 20:
+            if len(self.inbuf) >= 24:
                 try:
-                    self.hdr,self.inbuf = msgs.Header(self.inbuf[:20]), self.inbuf[20:]
+                    self.hdr,self.inbuf = msgs.Header(self.inbuf[:24]), self.inbuf[24:]
                 except ProtocolViolation as e:
                     self.close(repr(e))
             else:
@@ -109,7 +109,7 @@ class BitcoinNode(Node):
         Node.__init__(self, *args, **kwargs)
         self.server = server
         self.active = False
-        self.peer_address = msgs.Address.make("0.0.0.0", 8333)
+        self.peer_address = msgs.Address.make("0.0.0.0",8333)
         self.sendmsg(msgs.Version.make(sender=self.server.address, reciever=self.peer_address))
     
     def on_init(self):
@@ -122,7 +122,10 @@ class BitcoinNode(Node):
         if msg.version < 31900:
             self.close("to low version %d" % msg.version)
         self.sendmsg(msgs.Verack.make())
-        
+    
+    def __repr__(self):
+        return "<Node %s:%d - %s>" %(self.peer_address.ip, self.peer_address.port, self.active and "Active" or "Inactive")
+    
     def handle_verack(self, msg):
         self.active = True
         self.server.node_connected(self)
@@ -138,7 +141,7 @@ class BitcoinServer:
             self.listeners = []
         self.addrs = set()
         self.timers = timerq.Timerq()
-        self.address = msgs.Address.make("127.0.0.1",8333)
+        self.address = msgs.Address.make("127.0.0.1",833)
         for h in map(lambda h: (h, 8333), hosts):
             self.check_host(h)
         self.timers.add_event(15, self.search_for_missing_blocks)
@@ -207,11 +210,8 @@ class BitcoinServer:
             node.sendmsg(msg)
             
     def handle_inv(self, node, msg):
-        for i in msg.objs:
-            if i.objtype == msgs.TYPE_BLOCK:
-                if self.chain.has_block(i.hash):
-                    continue
-            self.sendrandom(msgs.Getdata.make([i]))
+        objs = [obj for obj in msg.objs if obj.objtype == msgs.TYPE_BLOCK and not self.chain.has_block(obj.hash)]
+        node.sendmsg(msgs.Getdata.make(objs))
             
     def sendrandom(self, msg):
         active_nodes = filter(lambda n: n.active, self.nodes)
@@ -219,7 +219,7 @@ class BitcoinServer:
             LOG.debug("no nodes connected, not sending %s", msg.type)
             return
         node = random.choice(active_nodes)
-        LOG.debug("sending a %s to %s", msg.type, node.peer_address.ip)
+        LOG.debug("sending a %s to %s", msg.type, repr(node))
         node.sendmsg(msg)
             
     def handle_block(self, node, msg):

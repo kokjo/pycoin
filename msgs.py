@@ -18,7 +18,7 @@ TYPE_BLOCK = 2
     
 class Header():
     def __init__(self, data, magic=MAGIC_MAINNET):
-        self.magic, self.cmd, self.len = struct.unpack("<L12sL", data)
+        self.magic, self.cmd, self.len, self.cksum = struct.unpack("<L12sL4s", data)
         if self.magic != magic:
             raise ProtocolViolation("wrong magic") # Client shutdown
         self.cmd = self.cmd.strip("\x00")
@@ -27,21 +27,14 @@ class Header():
         except KeyError:
             print "??",self.cmd
             raise ProtocolViolation # Unrecognized message type
-        if self.cmd not in ("version", "verack"):
-            self.len += 4
     def deserialize(self, data):
-        if self.cmd not in ("version", "verack"):
-            self.cksum, data = data[:4], data[4:]
-            if self.cksum != checksum(data):
-                raise ProtocolViolation
+        if self.cksum != checksum(data):
+            raise ProtocolViolation
         return self.type.frombinary(data)[0]
     @staticmethod
     def serialize(msg, magic=MAGIC_MAINNET):
         data = msg.tobinary()
-        if msg.type not in ("version", "verack"):
-            return struct.pack("<L12sL4s", magic, msg.type.encode('ascii'), len(data), checksum(data)[:4]) + data
-        else: # No checksum in version and verack
-            return struct.pack("<L12sL", magic, msg.type.encode('ascii'), len(data)) + data   
+        return struct.pack("<L12sL4s", magic, msg.type.encode('ascii'), len(data), checksum(data)[:4]) + data
 
 class Address(js.Entity, bs.Entity):
     fields = {
@@ -70,7 +63,7 @@ class Version(js.Entity, bs.Entity):
         "reciever":Address,
         "sender":Address,
         "nonce":js.Int,
-        "subverinfo":js.Str,
+        "useragent":js.Str,
         "finalblock":js.Int
     }
     bfields = [
@@ -80,18 +73,18 @@ class Version(js.Entity, bs.Entity):
         ("reciever", Address),
         ("sender", Address),
         ("nonce", bs.structfmt("<Q")),
-        ("subverinfo", bs.Str),
+        ("useragent", bs.Str),
         ("finalblock", bs.structfmt("<I")),
     ]
     @constructor
-    def make(self, version=31900, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0)):
+    def make(self, version=50000, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0), useragent="pycoin"):
         self.version = version
         self.services = 0
         self.time = int(time.time())
         self.sender = sender
         self.reciever = reciever
         self.nonce = 1234134124
-        self.subverinfo = ""
+        self.useragent = useragent
         self.finalblock = 1
 
 class Verack(js.Entity, bs.Entity):
@@ -249,6 +242,10 @@ class Tx(js.Entity, bs.Entity):
     @cachedproperty
     def hash(self):
         return doublesha(self.tobinary())
+    @property
+    def coinbase(self): 
+        return len(self.inputs) == 1 and self.inputs[0].outpoint.tx == nullhash and self.inputs[0].outpoint.index == 0xffffffff
+    
 
 class Block(js.Entity, bs.Entity):
     fields = {

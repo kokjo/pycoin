@@ -1,4 +1,5 @@
 from hashlib import sha256
+import math
 #import jserialize as js
 class ProtocolViolation(Exception):
     """Indicates that the communication protocol between this and a remote
@@ -27,6 +28,11 @@ def cachedproperty(func):
 def bits_to_target(bits):
     return (bits & 0x00ffffff) * 2 ** (8 * ((bits >> 24) - 3))
 
+def target_to_bits(target):
+    e = int(math.log(target, 2))/8 + 1
+    p = target >> 8*(e-3)
+    return (e << 24) + p
+    
 def bits_to_diff(bits):
     return bits_to_target(0x1d00ffff) // bits_to_target(bits)
 
