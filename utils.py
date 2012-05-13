@@ -24,20 +24,29 @@ def cachedproperty(func):
             setattr(self, '_' + func.__name__, func(self))
         return getattr(self, '_' + func.__name__)
     return f
+    
+def cached(func):
+    def f(self, *args, **kwargs):
+        if not hasattr(self, "_cache_"+func.__name__):
+            setattr(self, "_cache_"+func.__name__, func(*args, **kwargs))
+        return getattr(self, "_cache_"+func.__name__)
 
 def bits_to_target(bits):
     return (bits & 0x00ffffff) * 2 ** (8 * ((bits >> 24) - 3))
 
 def target_to_bits(target):
-    e = int(math.log(target, 2))/8 + 1
+    e = int(math.log(target, 2))/8 + 2
     p = target >> 8*(e-3)
     return (e << 24) + p
     
 def bits_to_diff(bits):
     return bits_to_target(0x1d00ffff) // bits_to_target(bits)
 
-def check_bits(bits, hash):
-    if bits_to_target(bits) > int(js.Hash.tojson(hash), 16):
+def hash_to_int(h):
+    return int(h[::-1].encode("hex"), 16)
+    
+def check_bits(bits, h):
+    if bits_to_target(bits) > int(h2h(h), 16):
         return True
     return False
 
@@ -75,4 +84,5 @@ def h2h(h):
     return h[::-1].encode("hex")
         
 nullhash = "\x00"*32
-blockreward = 5000000000
+COIN = 100000000
+blockreward = 50*COIN
