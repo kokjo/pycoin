@@ -1,0 +1,28 @@
+$def with(tx)
+<html><body>
+<h2>$h2h(tx.hash)</h2>
+<h3></h3>
+<h3>Block</h3>
+$:blk_link(tx.block)
+<h3>input amount:</h3>
+$tx.get_amount_in()
+<h3>output amount:</h3>
+$tx.get_amount_out()
+<h3>fee amount:</h3>
+$tx.get_fee()
+<h3>Inputs:</h3>
+<table>
+    <tr><td>Outpoint</td><td>Script</td></tr>
+$for inp in tx.tx.inputs:
+    <tr><td>$:tx_link(inp.outpoint.tx):$inp.outpoint.index</td><td>$inp.script.encode("hex")</td></tr>
+</table>
+<h3>Outputs:</h3>
+<table>
+<tr><td>Amount</td><td>Script</td></tr>
+$for outp in tx.tx.outputs:
+    <tr><td>$outp.amount</td><td>$outp.script.encode("hex")</td></tr>
+</table>
+
+</body></html>
+
+

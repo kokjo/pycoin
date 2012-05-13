@@ -193,7 +193,7 @@ class Getdata(js.Entity, bs.Entity):
     def make(self, objs):
         self.objs = objs
 
-class TxOutpoint(js.Entity, bs.Entity):
+class TxPoint(js.Entity, bs.Entity):
     fields = {
         "tx":js.Hash,
         "index":js.Int,
@@ -202,18 +202,24 @@ class TxOutpoint(js.Entity, bs.Entity):
         ("tx", bs.Hash),
         ("index", bs.structfmt("<I")),
     ]
+    @constructor
+    def make(self, tx, index):
+        self.tx = tx
+        self.index = index
 
 class TxInput(js.Entity, bs.Entity):
     fields = {
-        "outpoint":TxOutpoint,
+        "outpoint":TxPoint,
         "script":js.Bytes,
         "sequence":js.Int,
     }
     bfields = [
-        ("outpoint", TxOutpoint),
+        ("outpoint", TxPoint),
         ("script", bs.VarBytes),
         ("sequence", bs.structfmt("<I")),
     ]
+    def __repr__(self):
+        return "<TxIn outpoint: %s:%d>" % (h2h(self.outpoint.tx), self.outpoint.index)
 
 class TxOutput(js.Entity, bs.Entity):
     fields = {
@@ -224,6 +230,8 @@ class TxOutput(js.Entity, bs.Entity):
         ("amount", bs.structfmt("<Q")),
         ("script", bs.VarBytes),
     ]
+    def __repr__(self):
+        return "<TxOut amount: %d>" % (self.amount)
 
 class Tx(js.Entity, bs.Entity):
     type = "tx"
@@ -245,6 +253,8 @@ class Tx(js.Entity, bs.Entity):
     @property
     def coinbase(self): 
         return len(self.inputs) == 1 and self.inputs[0].outpoint.tx == nullhash and self.inputs[0].outpoint.index == 0xffffffff
+    def __repr__(self):
+        return "<Tx %s, %d inputs, %d outputs, coinbase: %s>" % (h2h(self.hash), len(self.inputs), len(self.outputs), str(self.coinbase))
     
 
 class Block(js.Entity, bs.Entity):

@@ -1,0 +1,24 @@
+$def with(blk)
+<html><body>
+<h2>$h2h(blk.hash) ($blk.number) - $chain_name(blk.chain)</h2>
+<h3>Total amount of fees:</h3>
+$blk.get_all_fees()
+<h3>Difficulty:</h3>
+$bits_to_diff(blk.block.bits)
+<h3>Total amount of work in chain:</h3>
+$blk.totaldiff
+<h3>Previous:</h3>
+$:blk_link(blk.prev)
+<h3>Next(s):</h3>
+<table>
+$for blk_h in blk.next:
+    <tr><td>$:blk_link(blk_h)</td></tr>
+</table>
+<h3>Transactions:</h3>
+<table>
+$for tx_h in blk.txs:
+    <tr><td>$:tx_link(tx_h)</td></tr>
+</table>
+</body></html>
+
+

@@ -8,29 +8,37 @@ import logging
 
 import database
 from database import txn_required
-log = logging.getLogger("pycoin.blockchain")
-
-class BlockError(Exception):
-    pass
-class TxError(Exception):
-    pass
-class TxInputAlreadySpend(TxError):
-    pass
-    
+from transactions import Tx
 MAIN_CHAIN = 1
 SIDE_CHAIN = 2
 ORPHAN_CHAIN = 3
 INVALID_CHAIN = 4
 
+
 _chains = {MAIN_CHAIN: "Main", SIDE_CHAIN: "Side", ORPHAN_CHAIN: "Orphan", INVALID_CHAIN: "Invalid"}
-class BlockAux(js.Entity, bs.Entity):
+_diff_cache = {}
+
+class BlockError(Exception):
+    pass
+
+    
+log = logging.getLogger("pycoin.blockchain")
+
+chain = database.open_db("chain.dat")
+chain.set_get_returns_none(0)
+state = database.open_db("state.dat")
+blknums = database.open_db("blknum.dat")
+blknums.set_get_returns_none(0)
+orphans = {}
+
+class Block(js.Entity, bs.Entity):
     fields = {
         "block": msgs.Block,
         "number": js.Int,
         "totaldiff": js.Int,
         "chain": js.Int,
         "txs": js.List(js.Hash),
-        "next": js.List(js.Hash)
+        "nexts": js.List(js.Hash)
     }
     bfields = [
         ("block", msgs.Block),
@@ -38,333 +46,262 @@ class BlockAux(js.Entity, bs.Entity):
         ("totaldiff", bs.structfmt("<Q")),
         ("chain", bs.structfmt("<B")),
         ("txs", bs.VarList(bs.Hash)),
-        ("next", bs.VarList(bs.Hash))
+        ("nexts", bs.VarList(bs.Hash))
     ]
     
-    def chain_block(self, next_aux):
-        assert self.hash == next_aux.prev
-        next_aux.number = self.number + 1
-        next_aux.totaldiff = self.totaldiff + bits_to_diff(next_aux.block.bits)
-        self.next.append(next_aux.hash)
+    @property
+    def hash(self): return self.block.hash
+    @property
+    def hexhash(self): return h2h(self.hash)
+    @property
+    def prev(self): return self.block.prev
+    
+    @staticmethod
+    def iter_blocks(txn=None):
+        i = 0
+        while True:
+            try:
+                yield Block.get_by_number(i, txn=txn)
+            except KeyError:
+                raise StopIteration
+            i += 1
+            
+    @staticmethod
+    def get_by_hash(h, txn=None):
+        log.debug("getting block %s", h2h(h))
+        return Block.frombinary(chain.get(h, txn=txn))[0]
+    @staticmethod
+    def get_by_number(num, txn=None):
+        h = blknums.get(str(num), txn=txn)
+        return Block.get_by_hash(h, txn=txn)
         
-    @property
-    def hash(self):
-        return self.block.hash
+    @staticmethod
+    def exist_by_hash(h, txn=None):
+        return chain.has_key(h, txn=txn)
+    @staticmethod
+    def exist_by_number(num, txn=None):
+        return blknums.has_key(str(num), txn=txn)
+        
+    @txn_required
+    def put(self, txn=None):
+        if self.chain in (ORPHAN_CHAIN, INVALID_CHAIN):
+            log.debug("trying to put an invalid or orphan block in db? (bug?)")
+            return False
+        log.debug("putting block %s", h2h(self.hash))
+        chain.put(self.hash, self.tobinary(), txn=txn)
+        if self.chain == MAIN_CHAIN:
+            blknums.put(str(self.number), self.hash, txn=txn)
     
-    @property
-    def prev(self):
-        return self.block.prev
+    def get_tx(self, idx, txn=None):
+        return Tx.get_by_hash(self.txs[idx], txn=txn)
+        
+    def iter_tx(self, from_idx=None, to_idx=None, reverse=False, txn=None):
+        sl = self.txs[from_idx:to_idx]
+        if reverse: sl.reverse()
+        for tx_h in sl:
+            yield Tx.get_by_hash(tx_h, txn=txn)
+                
+    def get_prev(self, txn=None):
+        return Block.get_by_hash(self.prev, txn=txn)
+        
+    def get_next_bits(self, txn=None):
+        try: #try get calculated diff from cache.
+            return _diff_cache[self.hash]
+        except KeyError: #no, not in cache? calculate it.
+            targettimespan = 14 * 24 * 60 * 60 # 2 weeks in secounds
+            spacing = 10 * 60 # 10 min in secounds
+            interval = targettimespan/spacing
+            if (self.number + 1) % interval != 0:
+                return self.block.bits
+            prev_blk = self.get_prev(txn=txn)
+            log.info("DIFF: retarget, current bits: %s", hex(prev_blk.block.bits))
+            first_blk = self
+            for i in range(interval-1):
+                first_blk = first_blk.get_prev(txn=txn)
+            realtimespan = self.block.time - first_blk.block.time
+            log.info("DIFF: timespan before limits: %d", realtimespan)
+            if realtimespan < targettimespan/4:
+                realtimespan = targettimespan/4
+            if realtimespan > targettimespan*4:
+                realtimespan = targettimespan*4
+            log.info("DIFF: timespan after limits: %d", realtimespan)
+            newtarget = (bits_to_target(self.block.bits)*realtimespan)/targettimespan
+            if newtarget > bits_to_target(0x1d00ffff):
+                newtarget = bits_to_target(0x1d00ffff)
+            bits = target_to_bits(newtarget)
+                
+            _diff_cache[self.hash] = bits
+            log.info("DIFF: next bits: %s", hex(bits))
+            return bits
+        
+    def verify(self, txn=None):
+        prev_blk = self.get_prev(txn=txn)
+        if self.chain in (ORPHAN_CHAIN, INVALID_CHAIN):
+            return False
+        if not check_bits(self.block.bits, self.hash):
+            return False
+        if self.prev != nullhash:
+            if prev_blk.get_next_bits(txn=txn) != self.block.bits:
+                return False
+        #for tx in self.iter_tx(1, txn=txn):
+        #    if not tx.verify(self, txn=txn):
+        #        return False
+        return True
+        
+    @txn_required    
+    def confirm(self, txn=None):
+        log.info("confirming block %s(%d)", h2h(self.hash), self.number)
+        if not set_bestblock(self, txn=txn):
+            log.info("block %s(%d) not good", h2h(self.hash), self.number)
+            return False
+        if not self.verify(txn=txn):
+            raise BlockError()
+        self.chain = MAIN_CHAIN
+        coinbase_tx = Tx.get_by_hash(self.txs[0], txn=txn)
+        coinbase_tx.confirm(block=self, coinbase=True)
+        coinbase_tx.put(txn=txn)
+        for tx in self.iter_tx(from_idx=1, txn=txn):
+            tx.confirm(self, coinbase=False, txn=txn)
+            tx.put(txn=txn)
+
+    @txn_required    
+    def revert(self, txn=None):
+        log.info("reverting block %s(%d)", h2h(self.hash), self.number)
+        set_bestblock(self.get_prev(txn=txn), check=False, txn=txn)
+        if self.chain != MAIN_CHAIN:
+            log.debug("reverting a block, that is not in main chain? (bug?)")
+        self.chain = SIDE_CHAIN 
+        for tx_h in reversed(self.txs[1:]):
+            tx = Tx.get_by_hash(tx_h, txn=txn)
+            tx.revert(block=self, coinbase=False, txn=txn)
+            tx.put(txn=txn)
+        coinbase_tx = Tx.get_by_hash(self.txs[0], txn=txn)
+        coinbase_tx.revert(block=self, coinbase=True, txn=txn)    
+        coinbase_tx.put(txn=txn)
     
+    @txn_required        
+    def link(self, txn=None):
+        prev = self.get_prev(txn=txn)
+        prev.nexts.append(self.hash)
+        self.chain = prev.chain
+        self.number = prev.number + 1
+        self.totaldiff = prev.totaldiff + bits_to_diff(self.block.bits)
+        prev.put(txn=txn)
+        self.put(txn=txn)
+    
+    def get_all_fees(self, txn=None):
+        fees = 0
+        for tx_h in self.txs:
+            tx = Tx.get_by_hash(tx_h, txn=txn)
+            fees += tx.get_fee(txn=txn)
+        return fees
+        
     def __repr__(self):
         return "<Block %s(%d) - diff: %d - chain: %s>" % (
-        h2h(self.hash), self.number, bits_to_diff(self.block.bits), _chains.get(self.chain, "unknown"))       
+        self.hexhash, self.number, bits_to_diff(self.block.bits), _chains.get(self.chain, "unknown(BUG)"))       
          
     @constructor
     def make(self, blockmsg):
         self.block, self.txs = blockmsg.block, [tx.hash for tx in blockmsg.txs]
-        self.number, self.totaldiff, self.chain, self.next = 0, 0, ORPHAN_CHAIN, []
-        
-class TxAux(js.Entity, bs.Entity):
-    fields = {
-        "tx":msgs.Tx,
-        "block":js.Hash,
-        "redeemed":js.List(js.Hash),
-        "blkindex":js.Int
-    }
-    bfields = [
-        ("tx", msgs.Tx),
-        ("block", bs.Hash),
-        ("redeemed", bs.VarList(bs.Hash)),
-        ("blkindex", bs.structfmt("<L")),
-    ]
-    
-    @property
-    def hash(self):
-        return self.tx.hash
-        
-    @property
-    def confirmed(self):
-        return self.block != nullhash
-        
-    @property
-    def coinbase(self):
-        return self.tx.inputs[0].outpoint.tx == nullhash
-    
-    @property
-    def total_amount_spend(self):
-        return sum([i.amount for i in self.tx.inputs])   
-         
-    @constructor
-    def make(self, tx):
-        self.tx, self.block = tx, nullhash
-        self.blkindex = 0
-        self.redeemed = [nullhash] * len(tx.outputs)
-        
-    def get_output(self, outpoint):
-        assert self.hash == outpoint.tx, "outpoint hash does not point to tx"
-        assert outpoint.index < len(self.tx.outputs), "outpoint index out of range"
-        return self.tx.outputs[outpoint.index]
-        
-    def spend_output(self, outpoint, tx):
-        assert self.hash == outpoint.tx, "outpoint hash does not point to tx"
-        assert outpoint.index < len(self.tx.outputs), "outpoint index out of range"
-        if self.redeemed[outpoint.index] != nullhash:
-            raise TxInputAlreadySpend(outpoint)
-        self.redeemed[outpoint.index] = tx.hash
-        
-    def unspend_output(self, outpoint):
-        assert self.hash == outpoint.tx, "outpoint hash does not point to tx"
-        assert outpoint.index < len(self.tx.outputs), "outpoint index out of range"
-        self.redeemed[outpoint.index] = nullhash
-        
-class BlockChain(object):
-    def __init__(self):
-        self.chain = database.open_db("chain.dat")
-        self.txs = database.open_db("txs.dat")
-        self.state = database.open_db("state.dat")
-        self.blknums = database.open_db("blknum.dat")
-        self.orphans = {}
-        if not self.chain.has_key(genesisblock.hash):
-            self.add_genesis(genesisblock.blockmsg)
+        self.number, self.totaldiff, self.chain, self.nexts = 0, 0, ORPHAN_CHAIN, []
 
-    def get_aux(self, h, txn=None):
-        """get a Block Aux in the database"""
-        log.debug("getting block %s", h2h(h))
-        return BlockAux.frombinary(self.chain.get(h, txn=txn))[0]
-    
-    @txn_required    
-    def put_aux(self, aux, txn=None):
-        """get a Block Aux in the database"""
-        log.debug("putting block %s", h2h(aux.hash))
-        self.chain.put(aux.hash, aux.tobinary(), txn=txn)
-        if aux.chain == MAIN_CHAIN:
-            self.blknums.put(str(aux.number), aux.hash, txn=txn)
-    
-    def get_aux_by_num(self, idx, txn=None):
-        return self.get_aux(self.blknums.get(str(idx), txn=txn), txn=txn)
-            
-    @property
-    def missing_blocks(self):
-        missing = self.orphans.keys()
-        return [h for h in missing if not self.has_block(h)]
-        
-    def has_block(self, h, txn=None):
-        if self.chain.has_key(h):
-            return True
-        if h in map(lambda o: o.hash, sum(self.orphans.values(), [])): # hack: sum([["a", "b"], ["c"]], []) = ["a", "b", "c"]
-            return True
-        return False            
-            
-    def has_tx(self, h):
-        return h in self.txs 
-        
-    def get_tx(self, h, txn=None):
-        return TxAux.frombinary(self.txs[h])[0]
-        
-    def put_tx(self, tx, txn=None):
-        self.txs[tx.hash] = tx.tobinary()
-        
-    def get_bestblock(self, txn=None):
-        return self.get_aux(self.state.get("bestblock", txn=txn), txn=txn)
-        
-    def get_target(self, prev_aux, txn=None):        
-        targettimespan = 14 * 24 * 60 * 60 # 2 weeks in secounds
-        spacing = 10 * 60 # 10 min in secounds
-        interval = timespan/spacing
-        if (prev_aux.number + 1) % interval != 0:
-            return prev_aux.block.bits
-        log.info("DIFF: retarget, current bits: %s", hex(prev_aux.block.bits))
-        first_aux = prev_aux
-        for i in range(interval-1):
-            first_aux = self.get_aux(first_aux.prev, txn=txn)
-        realtimespan = last_aux.block.time - first_aux.block.time
-        log.info("DIFF: timespan before limits: %d", realtimespan)
-        if realtimespan < targettimespan/4:
-            realtimespan = targettimespan/4
-        if realtimespan > targettimespan*4:
-            realtimespan = targettimespan*4
-        log.info("DIFF: timespan after limits: %d", realtimespan)
-        newtarget = (bits_to_target(prev_aux.block.bits)*realtimespan)/targettimespan
-        return target_to_bits(newtarget)
-        
-    @txn_required
-    def put_bestblock(self, new, txn=None):
-        old = self.get_bestblock(txn=txn)
-        if old.totaldiff < new.totaldiff:
-            if new.prev != old.hash:
-                self.reorg(old, new, txn=txn)
-            new.chain = MAIN_CHAIN
-            self.put_aux(new, txn=txn)
-            self.state.put("bestblock", new.hash, txn=txn)
-            if new.number % 2016 == 0:
-                self.diff_retarget(aux, txn=txn)
-            log.info("new best block %s(%d)", h2h(new.hash), new.number)
-        else:
-            log.info("%s is not better then the currently best block %s", h2h(new.hash), h2h(old.hash))
-            
-    def findsplit(self, old, new, txn=None):
-        """finds the split between old and new. 
-        Returns (spilt, old, new)"""
-        log.info("finding spilt for %s(%d) and %s(%d)", h2h(old.hash), old.number, h2h(new.hash), new.number)
-        oldlist = []
-        newlist = []
-        while old.number != new.number:
-            if old.number > new.number:
-                oldlist.append(old.hash)
-                old = self.get_aux(old.prev, txn=txn)
-            else:
-                newlist.append(new.hash)
-                new = self.get_aux(new.prev, txn=txn)
-        while old.prev != new.prev:
-            oldlist.append(old.hash)
-            newlist.append(new.hash)
-            old = self.get_aux(old.prev, txn=txn)
-            new = self.get_aux(new.prev, txn=txn)
-        split = self.get_aux(new.prev, txn=txn)
-        log.info("spilt found at %s(%d)", h2h(split.hash), split.number)
-        return split.hash, oldlist, newlist
-    
-    def revert_tx(self, tx, coinbase=False, txn=None):
-        tx.block = nullhash
-        if coinbase:
-            return tx
-        for i in tx.tx.inputs:
-            input_tx = self.get_tx(i.outpoint.tx, txn=txn)
-            input_tx.redeemed[i.outpoint.index] = nullhash
-            self.put_tx(input_tx, txn=txn)     
-        return tx    
-        
-    def verify_tx(self, tx, coinbase=False, txn=None):
-        pass
-            
-    def comfirm_tx(self, tx, blk, coinbase=False, txn=None):
+@txn_required
+def add_genesis(blkmsg, txn=None):
+    blk = Block.make(blkmsg)
+    blk.chain = MAIN_CHAIN
+    blk.totaldiff = 1
+    blk.number = 0
+    blk.put(txn=txn)
+    for num, txmsg in enumerate(blkmsg.txs):
+        tx = Tx.make(txmsg)
+        tx.put(txn=txn)
         tx.block = blk.hash
-        if coinbase:
-            return tx        
-        for i in tx.tx.inputs:
-            input_tx = self.get_tx(i.outpoint.tx, txn=txn)
-            if input_tx.redeemed[i.outpoint.index] != nullhash:
-                raise TxError("input already spend", tx, input_tx)
-            input_tx.redeemed[i.outpoint.index] = tx.hash
-            self.put_tx(input_tx, txn=txn)
-        return tx
+        tx.blkindex = num
+    set_bestblock(blk, check=False, txn=txn)
     
-    def sum_tx_amount_input(self, tx, txn=None):
-        amount = 0
-        for inp in t.tx.inputs:
-            input_tx = self.get_tx(inp.outpoint.tx, txn=txn)
-            amount += input_tx.tx.outputs[inp.outpoint.index].amount
-            
-    def sum_tx_amount_output(self, tx, txn=None):
-        return sum([outp.amount for outp in tx.tx.outputs])
-              
-    def revert_block(self, aux, txn=None):
-        aux.chain = SIDE_CHAIN
-        self.state.put("bestblock", aux.prev, txn=txn)
-        tx = self.get_tx(aux.txs[0], txn=txn)
-        tx = self.revert_tx(tx, True, txn=txn)
-        self.put_tx(tx, txn=txn)
-        for tx_h in aux.txs[1:]:
-            tx = self.get_tx(tx_h, txn=txn)
-            tx = self.revert_tx(tx, txn=txn)
-            self.put_tx(tx, txn=txn)
-        return aux
+def get_bestblock(txn=None, raw=False):
+    h = state.get("bestblock", txn=txn)
+    if raw:
+        return h
+    return Block.get_by_hash(h, txn=txn)
+ 
+@txn_required
+def set_bestblock(blk, check=True, txn=None):
+    if check:
+        best = get_bestblock(txn=txn)
+        if blk.totaldiff <= best.totaldiff:
+            log.info("%s(%d) is not better then %s(%d)", h2h(blk.hash), blk.number, h2h(best.hash), best.number)
+            return False
+        if best.hash != blk.prev:
+            reorganize(best, blk, txn=txn)
+    state.put("bestblock", blk.hash, txn=txn)
+    return True
+
+@txn_required
+def reorganize(old, new, txn=None):
+    log.info("reorginizing blockchain:")
+    split, old_blocks, new_blocks = find_split(old, new, txn=txn)
+    log.info("REORG: split:%s(%d)", h2h(split.hash), split.number)
+    for blk in old_blocks:
+        blk.revert(txn=txn)
+        blk.put(txn=txn)
+    for blk in reversed(new_blocks):
+        blk.confirm(txn=txn)
+        blk.put(txn=txn)
         
-    def chain_block(self, aux, txn=None):
-        aux.chain = MAIN_CHAIN
-        self.state.put("bestblock", aux.hash, txn=txn)
-        tx = self.get_tx(aux.txs[0], txn=txn)
-        tx = self.comfirm_tx(tx, aux, True, txn=txn)
-        self.put_tx(tx, txn=txn)
-        for tx_h in aux.txs[1:]:
-            tx = self.get_tx(tx_h, txn=txn)
-            tx = self.comfirm_tx(tx, aux, txn=txn)
-            self.put_tx(tx, txn=txn)
-        return aux
-        
-    def for_all_blocks(self, l, func, txn=None):
-        for h in l:
-            aux = self.get_aux(h, txn=txn)
-            aux = func(aux, txn=txn)
-            self.put_aux(aux, txn=txn)
-            
-    @txn_required
-    def reorg(self, old, new, txn=None):
-        """reorginizes the blockchain, so that the new block, is the main block. and all blocks in the old chain is invalidated."""
-        log.info("REORG old: %s, new: %s", h2h(old.hash), h2h(new.hash))
-        split, oldchain, newchain = self.findsplit(old, new, txn=txn)
-        log.info("blocks to revert: %s", ", ".join(map(h2h, oldchain)))
-        log.info("blocks to chain: %s", ", ".join(map(h2h, newchain)))
-        self.for_all_blocks(oldchain, self.revert_block, txn=txn)
-        self.for_all_blocks(newchain[::-1], self.chain_block, txn=txn)
-        log.info("REORG done.")
-        
-    def add_genesis(self, blockmsg):
-        """inits the block chain, by putting in the genesis block"""
-        aux = BlockAux.make(blockmsg)
-        aux.totaldiff = 1
-        aux.number = 0
-        aux.chain = MAIN_CHAIN
-        self.put_aux(aux)
-        self.state.put("bestblock", aux.hash)
-        
-    def verify_block(self, aux):
-        return True
-    
-    def check_orphans(self, aux, txn=None):
-        blocks = self.orphans.pop(aux.hash, [])
-        while blocks:
-            aux = blocks.pop(0)
-            self._add_block(aux, False, txn=txn)
-            blocks += self.orphans.pop(aux.hash, [])
-            
-    def add_orphan(self, aux):
-        orphans = self.orphans.pop(aux.prev, [])
-        if aux.hash not in [o.hash for o in orphans]:
-            self.orphans[aux.prev] = orphans + [aux]
-        
-    def add_tx(self, tx):
-        tx = TxAux.make(tx)
-        self.put_tx(tx)
-        
-    @txn_required            
-    def add_block(self, blockmsg, txn=None):
-        aux = BlockAux.make(blockmsg)
-        for tx in blockmsg.txs:
-            self.add_tx(tx)
-        if self.has_block(aux.hash, txn=txn):
-            log.info("already having block %s", h2h(aux.hash))
-            return
-        self._add_block(aux, txn=txn)
-    
-        
-    def _add_block(self, aux, check_orphans=True, txn=None):
-        log.info("chaining %s to chain", h2h(aux.hash))
-        if self.chain.has_key(aux.prev, txn=txn):
-            aux_prev = self.get_aux(aux.prev, txn=txn)
-            aux_prev.chain_block(aux)
-            self.put_aux(aux_prev, txn=txn)
-            self.put_aux(aux, txn=txn)
-            self.put_bestblock(aux, txn=txn)
-            if check_orphans:
-                self.check_orphans(aux, txn=txn)
+def find_split(old, new, txn=None):
+    """finds the split between old and new. Returns (spilt, oldlist, newlist)"""
+    log.info("finding spilt for %s(%d) and %s(%d)", h2h(old.hash), old.number, h2h(new.hash), new.number)
+    oldlist = []
+    newlist = []
+    while old.number != new.number:
+        if old.number > new.number:
+            oldlist.append(old)
+            old = old.get_prev(txn=txn)
         else:
-            log.info("%s is missing %s", h2h(aux.hash), h2h(aux.prev))
-            self.add_orphan(aux)
-            
-def test():
-    import struct
+            newlist.append(new)
+            new = new.get_prev(txn=txn)
+    while old.hash != new.hash:
+        oldlist.append(old)
+        newlist.append(new)
+        old = old.get_prev(txn=txn)
+        new = new.get_prev(txn=txn)
+    split = new # = old
+    log.info("spilt found at %s(%d)", h2h(split.hash), split.number)
+    return split, oldlist, newlist[1:]
+
+@txn_required
+def process_blockmsg(blkmsg, txn=None):
+    if Block.exist_by_hash(blkmsg.block.hash, txn=txn):
+        log.info("already have block %s", h2h(blkmsg.block.hash))
+        return
+    blk = Block.make(blkmsg)
+    for txmsg in blkmsg.txs:
+        if not Tx.exist(txmsg.hash, txn=txn):
+            tx = Tx.make(txmsg)
+            tx.put(txn=txn)
+    if Block.exist_by_hash(blk.prev):
+        blk.link(txn=txn)
+        blk.confirm(txn=txn)
+        blk.put(txn=txn)
+        
+if not Block.exist_by_hash(genesisblock.hash):
+    add_genesis(genesisblock.blkmsg)
+    
+import struct
+def read_blocks(f):
+    while True:
+        try:
+            magic, size = struct.unpack("<LL", f.read(8))
+            blkdata = f.read(size)
+            blkmsg = msgs.Blockmsg.frombinary(blkdata)[0]
+            yield blkmsg
+        except struct.error:
+            return
+
+if __name__ == "__main__":
     import sys
     logging.basicConfig(format='%(name)s - %(message)s', level=logging.INFO)
     blkfile = open(sys.argv[1],"r")
-    chain = BlockChain()
-    while True:
-        try:
-            magic, size = struct.unpack("<LL", blkfile.read(8))
-        except struct.error:
-            break
-        blkdata = blkfile.read(size)
-        blkmsg = msgs.Blockmsg.frombinary(blkdata)[0]
-        chain.add_block(blkmsg)
-if __name__ == "__main__":
-    test()
+    for blkmsg in read_blocks(blkfile):
+        process_blockmsg(blkmsg)
