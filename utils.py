@@ -35,9 +35,12 @@ def bits_to_target(bits):
     return (bits & 0x00ffffff) * 2 ** (8 * ((bits >> 24) - 3))
 
 def target_to_bits(target):
-    e = int(math.log(target, 2))/8 + 2
+    e = int(math.log(target, 2)/8) + 1 # byte length
     p = target >> 8*(e-3)
-    return (e << 24) + p
+    if p & (1 << 23): # if signed put zero byte in front
+        p = p >> 8
+        e = e + 1
+    return (e << 24) + (p & 0xffffff)
     
 def bits_to_diff(bits):
     return bits_to_target(0x1d00ffff) // bits_to_target(bits)
