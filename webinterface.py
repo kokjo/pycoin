@@ -1,5 +1,5 @@
 import web
-from blockchain import Block, Tx, _chains
+from blockchain import Block, Tx, _chains, get_bestblock
 from utils import *
 
 def tx_link(tx_h):
@@ -22,17 +22,25 @@ class block:
         h = hexhash.decode("hex")[::-1]
         blk = Block.get_by_hash(h)
         return get_render().block(blk)
+        
 class blocknumber_redirect:        
     def GET(self, number):
         number = int(number)
         blk = Block.get_by_number(number)
         raise web.seeother('/blockhash/%s' % h2h(blk.hash))
 
+class blocknumber_redirect:        
+    def GET(self, number):
+        number = int(number)
+        blk = get_bestblock()
+        raise web.seeother('/blockhash/%s' % h2h(blk.hash))
+
 
 urls = (
     "/tx/(.*)", tx,
     "/blockhash/(.*)", block,
-    "/blocknumber/(.*)", blocknumber_redirect
+    "/blocknumber/(.*)", blocknumber_redirect,
+    "/", bestblock_redirect
 )
 app = web.application(urls, globals())
 

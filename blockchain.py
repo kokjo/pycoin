@@ -1,3 +1,4 @@
+import eventlet
 from utils import *
 import genesisblock
 import msgs
@@ -5,10 +6,19 @@ import jserialize as js
 import bserialize as bs
 import bsddb
 import logging
+#import debug
 
 import database
 from database import txn_required
-from transactions import Tx
+import transactions
+
+try:
+    import psyco
+    psyco.full()
+except ImportError:
+    print 'Psyco not installed, the program will just run slower'
+
+
 MAIN_CHAIN = 1
 SIDE_CHAIN = 2
 ORPHAN_CHAIN = 3
@@ -16,7 +26,7 @@ INVALID_CHAIN = 4
 
 
 _chains = {MAIN_CHAIN: "Main", SIDE_CHAIN: "Side", ORPHAN_CHAIN: "Orphan", INVALID_CHAIN: "Invalid"}
-_diff_cache = {}
+
 
 class BlockError(Exception):
     pass
@@ -93,46 +103,43 @@ class Block(js.Entity, bs.Entity):
             blknums.put(str(self.number), self.hash, txn=txn)
     
     def get_tx(self, idx, txn=None):
-        return Tx.get_by_hash(self.txs[idx], txn=txn)
+        return transactions.Tx.get_by_hash(self.txs[idx], txn=txn)
         
     def iter_tx(self, from_idx=None, to_idx=None, reverse=False, txn=None):
         sl = self.txs[from_idx:to_idx]
         if reverse: sl.reverse()
         for tx_h in sl:
-            yield Tx.get_by_hash(tx_h, txn=txn)
+            yield transactions.Tx.get_by_hash(tx_h, txn=txn)
                 
     def get_prev(self, txn=None):
         return Block.get_by_hash(self.prev, txn=txn)
         
     def get_next_bits(self, txn=None):
-        try: #try get calculated diff from cache.
-            return _diff_cache[self.hash]
-        except KeyError: #no, not in cache? calculate it.
-            targettimespan = 14 * 24 * 60 * 60 # 2 weeks in secounds
-            spacing = 10 * 60 # 10 min in secounds
-            interval = targettimespan/spacing
-            if (self.number + 1) % interval != 0:
-                return self.block.bits
-            prev_blk = self.get_prev(txn=txn)
-            log.info("DIFF: retarget, current bits: %s", hex(prev_blk.block.bits))
-            first_blk = self
-            for i in range(interval-1):
-                first_blk = first_blk.get_prev(txn=txn)
-            realtimespan = self.block.time - first_blk.block.time
-            log.info("DIFF: timespan before limits: %d", realtimespan)
-            if realtimespan < targettimespan/4:
-                realtimespan = targettimespan/4
-            if realtimespan > targettimespan*4:
-                realtimespan = targettimespan*4
-            log.info("DIFF: timespan after limits: %d", realtimespan)
-            newtarget = (bits_to_target(self.block.bits)*realtimespan)/targettimespan
-            if newtarget > bits_to_target(0x1d00ffff):
-                newtarget = bits_to_target(0x1d00ffff)
-            bits = target_to_bits(newtarget)
-                
-            _diff_cache[self.hash] = bits
-            log.info("DIFF: next bits: %s", hex(bits))
-            return bits
+        targettimespan = 14 * 24 * 60 * 60 # 2 weeks in secounds
+        spacing = 10 * 60 # 10 min in secounds
+        interval = targettimespan/spacing
+        if (self.number + 1) % interval != 0:
+            return self.block.bits
+        log.info("DIFF: retarget, current bits: %s", hex(self.block.bits))
+        first_blk = self
+        for i in range(interval-1):
+            first_blk = first_blk.get_prev(txn=txn)
+        realtimespan = self.block.time - first_blk.block.time
+        log.info("DIFF: timespan before limits: %d", realtimespan)
+        if realtimespan < targettimespan/4:
+            realtimespan = targettimespan/4
+        if realtimespan > targettimespan*4:
+            realtimespan = targettimespan*4
+        log.info("DIFF: timespan after limits: %d", realtimespan)
+        newtarget = bits_to_target(self.block.bits)
+        newtarget *= realtimespan
+        newtarget /= targettimespan
+        if newtarget > bits_to_target(0x1d00ffff):
+            newtarget = bits_to_target(0x1d00ffff)
+        bits = target_to_bits(newtarget)
+            
+        log.info("DIFF: next bits: %s", hex(bits))
+        return bits
         
     def verify(self, txn=None):
         prev_blk = self.get_prev(txn=txn)
@@ -143,9 +150,6 @@ class Block(js.Entity, bs.Entity):
         if self.prev != nullhash:
             if prev_blk.get_next_bits(txn=txn) != self.block.bits:
                 return False
-        #for tx in self.iter_tx(1, txn=txn):
-        #    if not tx.verify(self, txn=txn):
-        #        return False
         return True
         
     @txn_required    
@@ -157,7 +161,7 @@ class Block(js.Entity, bs.Entity):
         if not self.verify(txn=txn):
             raise BlockError()
         self.chain = MAIN_CHAIN
-        coinbase_tx = Tx.get_by_hash(self.txs[0], txn=txn)
+        coinbase_tx = self.get_tx(0, txn=txn)
         coinbase_tx.confirm(block=self, coinbase=True)
         coinbase_tx.put(txn=txn)
         for tx in self.iter_tx(from_idx=1, txn=txn):
@@ -171,11 +175,10 @@ class Block(js.Entity, bs.Entity):
         if self.chain != MAIN_CHAIN:
             log.debug("reverting a block, that is not in main chain? (bug?)")
         self.chain = SIDE_CHAIN 
-        for tx_h in reversed(self.txs[1:]):
-            tx = Tx.get_by_hash(tx_h, txn=txn)
+        for tx in self.iter_tx(from_idx=1, reverse=True, txn=txn):
             tx.revert(block=self, coinbase=False, txn=txn)
             tx.put(txn=txn)
-        coinbase_tx = Tx.get_by_hash(self.txs[0], txn=txn)
+        coinbase_tx = self.get_tx(0, txn=txn)
         coinbase_tx.revert(block=self, coinbase=True, txn=txn)    
         coinbase_tx.put(txn=txn)
     
@@ -183,7 +186,10 @@ class Block(js.Entity, bs.Entity):
     def link(self, txn=None):
         prev = self.get_prev(txn=txn)
         prev.nexts.append(self.hash)
-        self.chain = prev.chain
+        if prev.chain == MAIN_CHAIN:
+            self.chain = SIDE_CHAIN
+        else:
+            self.chain = prev.chain
         self.number = prev.number + 1
         self.totaldiff = prev.totaldiff + bits_to_diff(self.block.bits)
         prev.put(txn=txn)
@@ -192,7 +198,7 @@ class Block(js.Entity, bs.Entity):
     def get_all_fees(self, txn=None):
         fees = 0
         for tx_h in self.txs:
-            tx = Tx.get_by_hash(tx_h, txn=txn)
+            tx = transactions.Tx.get_by_hash(tx_h, txn=txn)
             fees += tx.get_fee(txn=txn)
         return fees
         
@@ -213,7 +219,7 @@ def add_genesis(blkmsg, txn=None):
     blk.number = 0
     blk.put(txn=txn)
     for num, txmsg in enumerate(blkmsg.txs):
-        tx = Tx.make(txmsg)
+        tx = transactions.Tx.make(txmsg)
         tx.put(txn=txn)
         tx.block = blk.hash
         tx.blkindex = num
@@ -277,8 +283,8 @@ def process_blockmsg(blkmsg, txn=None):
         return
     blk = Block.make(blkmsg)
     for txmsg in blkmsg.txs:
-        if not Tx.exist(txmsg.hash, txn=txn):
-            tx = Tx.make(txmsg)
+        if not transactions.Tx.exist(txmsg.hash, txn=txn):
+            tx = transactions.Tx.make(txmsg)
             tx.put(txn=txn)
     if Block.exist_by_hash(blk.prev):
         blk.link(txn=txn)
@@ -301,7 +307,21 @@ def read_blocks(f):
 
 if __name__ == "__main__":
     import sys
+    import time
     logging.basicConfig(format='%(name)s - %(message)s', level=logging.INFO)
-    blkfile = open(sys.argv[1],"r")
-    for blkmsg in read_blocks(blkfile):
-        process_blockmsg(blkmsg)
+    cmd = sys.argv[1]
+    if cmd == "loadblocks":
+        import debug
+        blkfile = open(sys.argv[2],"r")
+        pos = state.get("blkfilepos")
+        if pos:
+            blkfile.seek(int(pos))
+        for blkmsg in read_blocks(blkfile):
+            process_blockmsg(blkmsg)
+            state.put("blkfilepos", str(blkfile.tell()))
+            eventlet.sleep(0)
+    if cmd == "bestblock":
+        blk = get_bestblock()
+        print blk
+        print time.ctime(blk.block.time)
+        print "%d days ago" % ((time.time()-blk.block.time)/60/60/24)

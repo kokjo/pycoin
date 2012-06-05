@@ -1,5 +1,9 @@
+import hashlib
 from hashlib import sha256
+
 import math
+def ripe160(d=""):
+    return hashlib.new("ripemd160", d)
 #import jserialize as js
 class ProtocolViolation(Exception):
     """Indicates that the communication protocol between this and a remote
@@ -36,7 +40,7 @@ def bits_to_target(bits):
 
 def target_to_bits(target):
     e = int(math.log(target, 2)/8) + 1 # byte length
-    p = target >> 8*(e-3)
+    p = target >> 8*(e-3) # get the value bytes
     if p & (1 << 23): # if signed put zero byte in front
         p = p >> 8
         e = e + 1
@@ -80,6 +84,9 @@ def get_merkel_tree(hashs, hash_leaf):
 def doublesha(data):
     return sha256(sha256(data).digest()).digest()
 
+def hash160(data):
+    return ripe160(sha256(data).digest()).digest()
+    
 def checksum(bdata):
     return doublesha(bdata)[:4]
 

@@ -1,3 +1,4 @@
+import eventlet
 from bsddb import db as DB
 from time import sleep
 import collections
@@ -5,7 +6,7 @@ import logging
 from utils import constructor
 log = logging.getLogger("pycoin.database")
 
-KILL_ON_DEADLOCK = True
+KILL_ON_DEADLOCK = False
 
 homedir="./db"
 envflags = [DB.DB_THREAD, DB.DB_CREATE, DB.DB_INIT_MPOOL, DB.DB_INIT_LOCK, DB.DB_INIT_LOG, DB.DB_INIT_TXN, DB.DB_RECOVER]
@@ -14,10 +15,13 @@ dbflags = [DB.DB_THREAD, DB.DB_AUTO_COMMIT, DB.DB_CREATE]
 to_int = lambda l: reduce(lambda x, y: x|y, l)
 
 env = DB.DBEnv()
+env.set_lk_max_locks(10000)
+env.set_lk_max_objects(10000)
 env.open(homedir, to_int(envflags))
 env.set_cachesize(512*1024*1024, 0)
 env.set_timeout(1000, DB.DB_SET_TXN_TIMEOUT)
 env.set_timeout(1000, DB.DB_SET_LOCK_TIMEOUT)
+
 log.info("env opened")
 class TxnAbort(Exception):
     pass
@@ -31,6 +35,7 @@ def open_db(filename, dbtype=DB.DB_BTREE, flags=[]):
     return db
     
 def run_in_transaction(func, *args, **kwargs):
+    eventlet.sleep(0)
     i = 10
     sleeptime = 0.01
     while True:
@@ -50,6 +55,7 @@ def run_in_transaction(func, *args, **kwargs):
             if KILL_ON_DEADLOCK:
                 raise
             print "Deadlock: sleeping %1.2f sec" % sleeptime
+            eventlet.sleep(0)
             sleep(sleeptime)
             sleeptime *= 2
         except TxnAbort:
@@ -65,6 +71,7 @@ def run_in_transaction(func, *args, **kwargs):
             print "TXN END", txn
             if txn:
                 txn.commit()
+            eventlet.sleep(0)
 
 def Transaction(func):
     def _func(*args, **kwargs):
