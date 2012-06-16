@@ -37,13 +37,18 @@ Entity subclasses are serialization objects for their instances.
             retval += type.tobinary(self.__getattribute__(field))
         return retval
     @classmethod
-    def frombinary(cls, bdata):
+    def frombinary(cls, bdata, rest=True):
         self = cls.__new__(cls)
         for (field, type) in self.bfields:
             obj, bdata = type.frombinary(bdata)
             self.__setattr__(field, obj)
-        return self, bdata
-
+        if rest:
+            return self, bdata
+        else:
+            if bdata != "":
+                raise ProtocolViolation()
+            else:
+                return self
 def structfmt(fmt):
     """Produce a serialization object for a value understood by struct.
 e.g. structfmt("<I") for 4-byte integers"""

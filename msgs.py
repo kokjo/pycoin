@@ -25,12 +25,18 @@ class Header():
         try:
             self.type = msgtable[self.cmd]
         except KeyError:
+            if self.cmd == "alert":
+                return
             print "??",self.cmd
             raise ProtocolViolation # Unrecognized message type
+            
     def deserialize(self, data):
         if self.cksum != checksum(data):
             raise ProtocolViolation
+        if self.cmd == "alert":
+            return None
         return self.type.frombinary(data)[0]
+        
     @staticmethod
     def serialize(msg, magic=MAGIC_MAINNET):
         data = msg.tobinary()
@@ -77,7 +83,7 @@ class Version(js.Entity, bs.Entity):
         ("finalblock", bs.structfmt("<I")),
     ]
     @constructor
-    def make(self, version=50000, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0), useragent="pycoin"):
+    def make(self, version=60000, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0), useragent="pycoin"):
         self.version = version
         self.services = 0
         self.time = int(time.time())
@@ -117,24 +123,14 @@ class Getblocks(js.Entity, bs.Entity):
         self.starts = starts
         self.end = end
 
-class TimedAddress(js.Entity, bs.Entity):
-    fields = {
-        "lastseen":js.Int,
-        "address":Address,
-    }
-    bfields = [
-        ("lastseen", bs.structfmt("<I")),
-        ("address", Address),
-    ]
-
 class Addr(js.Entity, bs.Entity):
     type = "addr"
     fields = {
         "type":js.Str,
-        "addrs":js.List(TimedAddress),
+        "addrs":js.List(Address),
     }
     bfields = [
-        ("addrs", bs.VarList(TimedAddress)),
+        ("addrs", bs.VarList(Address)),
     ]
 
 class Getaddr(js.Entity, bs.Entity):

@@ -21,6 +21,7 @@ class TxInputAlreadySpend(TxError):
     pass
     
 txs = database.open_db("txs.dat")
+txs.set_get_returns_none(0)
 log = logging.getLogger("pycoin.transactions")
 
 class Tx(js.Entity, bs.Entity):
@@ -39,15 +40,47 @@ class Tx(js.Entity, bs.Entity):
     
     @staticmethod
     def get_by_hash(h, txn=None):
+        """get a transaction from the database.
+        throws KeyError, if not found.
+        """
         log.debug("getting tx %s", h2h(h))
         return Tx.frombinary(txs.get(h, txn=txn))[0]
+        
     @txn_required
     def put(self, txn=None):
+        """update the database record of the transaction."""
         log.debug("putting tx %s", h2h(self.hash))
         txs.put(self.hash, self.tobinary(), txn=txn)
+        
+    @staticmethod
+    def iter_tx(txn=None):
+        """loop though all transactions known to the database."""
+        try:
+            cur = txs.cursor(txn=txn)
+            while True:
+                try:
+                    h, data = cur.next()
+                except KeyError:
+                    break
+                yield Tx.frombinary(data)[0]                    
+        finally:
+            cur.close()
+            
+    @staticmethod
+    def get_or_make(txmsg, txn=None):
+        """get the database transaction, or make it from txmsg if it does not exist."""
+        if not Tx.exist(txmsg.hash, txn=txn):
+            tx = Tx.make(txmsg)
+            tx.put(txn=txn)
+        else:
+            tx = Tx.get_by_hash(txmsg.hash, txn=txn)
+        return tx
+        
     @staticmethod
     def exist(h, txn=None):
+        """check if a transactions exist in the database"""
         return txs.has_key(h, txn=txn)
+        
     @property
     def hash(self): return self.tx.hash
     @property
@@ -62,14 +95,25 @@ class Tx(js.Entity, bs.Entity):
     def coinbase(self): return self.tx.coinbase
     
     def get_block(self, txn=None):
+        """get the block in which this transaction is included. returns None, if the transaction is not confirmed"""
         if self.confirmed:
             return blockchain.Block.get_by_hash(self.block)
         else:
             return None
             
-    def confirm(self, block, coinbase=False, txn=None):
+    def get_confirmations(self, txn=None):
+        """get the number of confirmations this transactions haves."""
+        blk0 = self.get_block(txn=txn)
+        if not blk0:
+            return 0
+        blk1 = blockchain.get_bestblock(txn=txn)
+        return blk1.number-blk0.number+1
+        
+    def confirm(self, block, blkidx=0, coinbase=False, txn=None):
+        
         log.info("confirming tx %s", h2h(self.hash))
         self.block = block.hash
+        self.check_signatures()
         if coinbase:
             return
         for inp in self.tx.inputs:
@@ -119,7 +163,7 @@ class Tx(js.Entity, bs.Entity):
         if check_spend:
             pass #TODO: check if all inputs are not spend yet
         if check_scripts:
-            pass #TODO: check if the scripts are valid.
+            return self.check_signatures()
         return True
     
     def __repr__(self):

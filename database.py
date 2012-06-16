@@ -1,22 +1,23 @@
 import eventlet
-from bsddb import db as DB
+from bsddb3 import db as DB
 from time import sleep
 import collections
 import logging
 from utils import constructor
+import functools
 log = logging.getLogger("pycoin.database")
 
 KILL_ON_DEADLOCK = False
 
 homedir="./db"
-envflags = [DB.DB_THREAD, DB.DB_CREATE, DB.DB_INIT_MPOOL, DB.DB_INIT_LOCK, DB.DB_INIT_LOG, DB.DB_INIT_TXN, DB.DB_RECOVER]
+envflags = [DB.DB_THREAD, DB.DB_CREATE, DB.DB_INIT_MPOOL, DB.DB_INIT_LOCK, DB.DB_INIT_LOG, DB.DB_INIT_TXN] #DB.DB_RECOVER, DB.DB_JOINENV]
 dbflags = [DB.DB_THREAD, DB.DB_AUTO_COMMIT, DB.DB_CREATE]
 
 to_int = lambda l: reduce(lambda x, y: x|y, l)
 
 env = DB.DBEnv()
-env.set_lk_max_locks(10000)
-env.set_lk_max_objects(10000)
+env.set_lk_max_locks(100000)
+env.set_lk_max_objects(100000)
 env.open(homedir, to_int(envflags))
 env.set_cachesize(512*1024*1024, 0)
 env.set_timeout(1000, DB.DB_SET_TXN_TIMEOUT)
@@ -24,8 +25,22 @@ env.set_timeout(1000, DB.DB_SET_LOCK_TIMEOUT)
 
 log.info("env opened")
 class TxnAbort(Exception):
-    pass
-
+    def __init__(self, callback=None, *args, **kwargs):
+        self.__callback = callback
+        self.__args = args
+        self.__kwargs = kwargs
+        
+    @property
+    def callback(self):
+        if self.__callback:
+            return lambda: self.__callback(*self.__args, **self.__kwargs)
+        else:
+            return None
+            
+    def __call__(self):
+        cb = self.callback
+        if cb: return cb()
+            
 def open_db(filename, dbtype=DB.DB_BTREE, flags=[]):
     db = DB.DB(env)
     if not flags:
@@ -58,10 +73,11 @@ def run_in_transaction(func, *args, **kwargs):
             eventlet.sleep(0)
             sleep(sleeptime)
             sleeptime *= 2
-        except TxnAbort:
+        except TxnAbort as e:
             print "TXN ABORT(application)"
             _txn, txn = txn, None
             _txn.abort()
+            return e()
         except Exception as e:
             print "TXN ERROR(%s)"%repr(e), txn
             _txn, txn = txn, None
@@ -73,11 +89,13 @@ def run_in_transaction(func, *args, **kwargs):
                 txn.commit()
             eventlet.sleep(0)
 
+@functools.wraps
 def Transaction(func):
     def _func(*args, **kwargs):
         return run_in_transaction(func, *args, **kwargs)
     return _func
 
+@functools.wraps
 def txn_required(func):
     def _func(*args, **kwargs):
         txn = kwargs.get("txn", None)

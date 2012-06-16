@@ -9,7 +9,7 @@ import logging
 #import debug
 
 import database
-from database import txn_required
+from database import txn_required, TxnAbort
 import transactions
 
 try:
@@ -29,6 +29,9 @@ _chains = {MAIN_CHAIN: "Main", SIDE_CHAIN: "Side", ORPHAN_CHAIN: "Orphan", INVAL
 
 
 class BlockError(Exception):
+    pass
+
+class InvalidBlock(BlockError):
     pass
 
     
@@ -91,11 +94,24 @@ class Block(js.Entity, bs.Entity):
     @staticmethod
     def exist_by_number(num, txn=None):
         return blknums.has_key(str(num), txn=txn)
-        
+    
+    @staticmethod
+    def get_or_make(blkmsg, txn=None):
+        if not Block.exist_by_hash(blkmsg.hash, txn=txn):
+            blk = Block.make(blkmsg)
+            for txmsg in blkmsg.txs:
+                tx = transactions.Tx.get_or_make(txmsg, txn=txn)
+                if tx: tx.put(txn=txn)
+            blk.link(txn=txn)
+            blk.put(txn=txn)
+        else:
+            blk = Block.get_by_hash(blkmsg.hash, txn=txn)
+        return blk
+            
     @txn_required
     def put(self, txn=None):
-        if self.chain in (ORPHAN_CHAIN, INVALID_CHAIN):
-            log.debug("trying to put an invalid or orphan block in db? (bug?)")
+        if self.chain == ORPHAN_CHAIN:
+            log.debug("trying to put orphan block in db? (bug?)")
             return False
         log.debug("putting block %s", h2h(self.hash))
         chain.put(self.hash, self.tobinary(), txn=txn)
@@ -105,11 +121,14 @@ class Block(js.Entity, bs.Entity):
     def get_tx(self, idx, txn=None):
         return transactions.Tx.get_by_hash(self.txs[idx], txn=txn)
         
-    def iter_tx(self, from_idx=None, to_idx=None, reverse=False, txn=None):
-        sl = self.txs[from_idx:to_idx]
+    def iter_tx(self, from_idx=None, to_idx=None, reverse=False, enum=False, txn=None):
+        sl = list(enumerate(self.txs[from_idx:to_idx], start=from_idx))
         if reverse: sl.reverse()
-        for tx_h in sl:
-            yield transactions.Tx.get_by_hash(tx_h, txn=txn)
+        for blkidx, tx_h in sl:
+            if enum:
+                yield (blkid, transactions.Tx.get_by_hash(tx_h, txn=txn))
+            else:
+                yield transactions.Tx.get_by_hash(tx_h, txn=txn)
                 
     def get_prev(self, txn=None):
         return Block.get_by_hash(self.prev, txn=txn)
@@ -142,31 +161,35 @@ class Block(js.Entity, bs.Entity):
         return bits
         
     def verify(self, txn=None):
-        prev_blk = self.get_prev(txn=txn)
-        if self.chain in (ORPHAN_CHAIN, INVALID_CHAIN):
+        if self.chain == INVALID_CHAIN:
             return False
         if not check_bits(self.block.bits, self.hash):
             return False
-        if self.prev != nullhash:
-            if prev_blk.get_next_bits(txn=txn) != self.block.bits:
-                return False
+        prev_blk = self.get_prev(txn=txn)
+        if prev_blk.chain == INVALID_CHAIN:
+            return False
+        if prev_blk.get_next_bits(txn=txn) != self.block.bits:
+            return False
         return True
         
     @txn_required    
     def confirm(self, txn=None):
         log.info("confirming block %s(%d)", h2h(self.hash), self.number)
+        if not self.verify(txn=txn):
+            raise Invalidblock()
         if not set_bestblock(self, txn=txn):
             log.info("block %s(%d) not good", h2h(self.hash), self.number)
             return False
-        if not self.verify(txn=txn):
-            raise BlockError()
         self.chain = MAIN_CHAIN
-        coinbase_tx = self.get_tx(0, txn=txn)
-        coinbase_tx.confirm(block=self, coinbase=True)
-        coinbase_tx.put(txn=txn)
-        for tx in self.iter_tx(from_idx=1, txn=txn):
-            tx.confirm(self, coinbase=False, txn=txn)
-            tx.put(txn=txn)
+        try:
+            coinbase_tx = self.get_tx(0, txn=txn)
+            coinbase_tx.confirm(block=self, blkidx=0, coinbase=True, txn=txn)
+            coinbase_tx.put(txn=txn)
+            for blkidx, tx in self.iter_tx(from_idx=1, enum=True, txn=txn):
+                tx.confirm(self, coinbase=False, blkidx=blkidx, txn=txn)
+                tx.put(txn=txn)
+        except TxError:
+            raise InvalidBlock()
 
     @txn_required    
     def revert(self, txn=None):
@@ -182,6 +205,18 @@ class Block(js.Entity, bs.Entity):
         coinbase_tx.revert(block=self, coinbase=True, txn=txn)    
         coinbase_tx.put(txn=txn)
     
+    @txn_required
+    def invalidate(self, txn=None):
+        self.chain = CHAIN_INVALID
+        blocks_to_invalidate = set(self.nexts)
+        while blocks_to_invalidate:
+            blk_h = blocks_to_invalidate.pop()
+            blk = Block.get_by_hash(blk_h, txn=txn)
+            blk.chain = CHAIN_INVALID
+            blk.put(txn=txn)
+            blocks_to_invalidate.update(blk.nexts)
+        self.put(txn=txn)
+        
     @txn_required        
     def link(self, txn=None):
         prev = self.get_prev(txn=txn)
@@ -190,6 +225,8 @@ class Block(js.Entity, bs.Entity):
             self.chain = SIDE_CHAIN
         else:
             self.chain = prev.chain
+        if not self.verify(txn=txn):
+            self.chain = CHAIN_INVALID
         self.number = prev.number + 1
         self.totaldiff = prev.totaldiff + bits_to_diff(self.block.bits)
         prev.put(txn=txn)
@@ -220,9 +257,9 @@ def add_genesis(blkmsg, txn=None):
     blk.put(txn=txn)
     for num, txmsg in enumerate(blkmsg.txs):
         tx = transactions.Tx.make(txmsg)
-        tx.put(txn=txn)
         tx.block = blk.hash
         tx.blkindex = num
+        tx.put(txn=txn)
     set_bestblock(blk, check=False, txn=txn)
     
 def get_bestblock(txn=None, raw=False):
@@ -252,7 +289,10 @@ def reorganize(old, new, txn=None):
         blk.revert(txn=txn)
         blk.put(txn=txn)
     for blk in reversed(new_blocks):
-        blk.confirm(txn=txn)
+        try:
+            blk.confirm(txn=txn)
+        except InvalidBlock:
+            raise TxnAbort(blk.invalidate)
         blk.put(txn=txn)
         
 def find_split(old, new, txn=None):
@@ -290,7 +330,10 @@ def process_blockmsg(blkmsg, txn=None):
         blk.link(txn=txn)
         blk.confirm(txn=txn)
         blk.put(txn=txn)
-        
+        return True
+    else:
+        log.info("block(%s) missing prev(%s)", h2h(blk.hash), h2h(blk.prev))
+        return False
 if not Block.exist_by_hash(genesisblock.hash):
     add_genesis(genesisblock.blkmsg)
     
