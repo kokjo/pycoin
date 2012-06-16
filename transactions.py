@@ -14,7 +14,7 @@ import struct
 import ec
 
 def tx_event(tx, tags=[]):
-    queue.send_msg(tx.hash, "txs", tags=tags)
+    pass
 class TxError(Exception):
     pass
 class TxInputAlreadySpend(TxError):
