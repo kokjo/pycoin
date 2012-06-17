@@ -6,15 +6,12 @@ import jserialize as js
 import bserialize as bs
 import bsddb
 import logging
-import queue
 import database
 from database import txn_required
 import blockchain
 import struct
 import ec
 
-def tx_event(tx, tags=[]):
-    pass
 class TxError(Exception):
     pass
 class TxInputAlreadySpend(TxError):
@@ -67,6 +64,7 @@ class Tx(js.Entity, bs.Entity):
             cur.close()
             
     @staticmethod
+    @txn_required
     def get_or_make(txmsg, txn=None):
         """get the database transaction, or make it from txmsg if it does not exist."""
         if not Tx.exist(txmsg.hash, txn=txn):
@@ -109,18 +107,17 @@ class Tx(js.Entity, bs.Entity):
         blk1 = blockchain.get_bestblock(txn=txn)
         return blk1.number-blk0.number+1
         
+    @txn_required
     def confirm(self, block, blkidx=0, coinbase=False, txn=None):
-        
         log.info("confirming tx %s", h2h(self.hash))
         self.block = block.hash
-        self.check_signatures()
+        #self.check_signatures()
         if coinbase:
             return
         for inp in self.tx.inputs:
             inp_tx = Tx.get_by_hash(inp.outpoint.tx, txn=txn)
             inp_tx.redeem_output(inp.outpoint, self) 
             inp_tx.put(txn=txn)
-        tx_event(self, tags=["confirm"])
         
     def revert(self, block=None, coinbase=False, txn=None):
         log.info("reverting tx %s", h2h(self.hash))
@@ -131,13 +128,12 @@ class Tx(js.Entity, bs.Entity):
             inp_tx = Tx.get_by_hash(inp.outpoint.tx, txn=txn)
             inp_tx.unredeem_output(inp.outpoint)
             inp_tx.put(txn=txn)
-        tx_event(self, tags=["revert"])
             
     def get_amount_out(self): 
-        return sum([i.amount for i in self.tx.outputs])
+        return sum(i.amount for i in self.tx.outputs)
     
-    def get_amount_in(self, block=None, txn=None):
-        if self.coinbase:
+    def get_amount_in(self, block=None, coinbase=False, txn=None):
+        if coinbase and self.coinbase:
             if block:
                 reward = 50*COIN >> (block.number / 210000)
                 fees = block.get_all_fees(txn=txn)
@@ -156,8 +152,6 @@ class Tx(js.Entity, bs.Entity):
         return self.get_amount_in(txn=txn) - self.get_amount_out()
     
     def verify(self, check_spend=False, check_scripts=False, block=None, coinbase=False, txn=None):
-        if coinbase:
-            return True
         if self.total_amount_out() > self.total_amount_in(block=block, txn=txn):
             return False
         if check_spend:
@@ -209,6 +203,7 @@ class Tx(js.Entity, bs.Entity):
             if len(key) != key_l or len(sig) != sig_l:
                 return (0, None, None, None)
             return (2, None, sig, key)
+            
     def check_signatures(self):
         if self.coinbase:
             return True

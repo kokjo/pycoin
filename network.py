@@ -1,17 +1,15 @@
-import socket
-import select
 import msgs
-import jserialize as js
 from utils import *
 import time
 import random
 import logging
-import eventlet
 import struct
 import traceback
+import eventlet
 from eventlet.green import socket
 from eventlet import queue
-#import debug
+import blockchain
+import debug
 
 log = logging.getLogger("pycoin.network")
 
@@ -25,7 +23,7 @@ class Node:
     def __init__(self, sock):
         self.sock = sock
         self.connected = True
-        self.outq = queue.Queue()
+        self.outq = queue.Queue(30)
         self.sending_thread = None
         self.recving_thread = None
         
@@ -48,6 +46,7 @@ class Node:
                 self.sock.send(msgs.Header.serialize(msg))
             except socket.error:
                 return self.close("socket closed")
+            eventlet.sleep(0.01)
                 
     def start_serving(self):
         self.sending_thread = eventlet.spawn_n(self.recv_thread)
@@ -58,6 +57,7 @@ class Node:
             msg = self.recvmsg()
             if msg:
                 self.call_handler(msg)
+            eventlet.sleep(0.01)
     
     def call_handler(self, msg):
         pass
@@ -154,6 +154,7 @@ class BitcoinServer:
         self.nodes = set()
         self.listensock = listensock
         self.address = msgs.Address.make("127.0.0.1",8335)
+        self.handlers = {}
         for ip in hosts:
             self.connect_to((ip, 8333))
                     
@@ -170,51 +171,49 @@ class BitcoinServer:
         log.info("disconnected from %s:%d", node.peer_address[0], node.peer_address[1])
         self.nodes.remove(node)
         
-    def call_handler(self, node, msg):
-        pass
+    def add_handler(self, msgtype, handler):
+        handlers = self.handlers.get(msgtype, set())
+        handlers.add(handler)
+        self.handlers[msgtype] = handlers
         
+    def call_handler(self, node, msg):
+        for handler in self.handlers.get(msg.type, set()):
+            handler(node, msg)
+            
     def handle_addr(self, node, msg):
         for addr in msg.addrs[:5]:
-            if len(self.nodes) < 10:
+            if len(self.nodes) < 100:
                 self.connect_to((addr.ip, addr.port))
-            
-    def handle_getdata(self, node, msg):
-        pass
                     
     def broadcast(self, msg):
         for node in self.nodes:
             node.sendmsg(msg)
             
-    def handle_inv(self, node, msg):
-        objs = [obj for obj in msg.objs if obj.objtype in (msgs.TYPE_BLOCK, msgs.TYPE_TX)]
-        node.sendmsg(msgs.Getdata.make(objs))
-            
     def sendrandom(self, msg):
-        node = random.choice(self.nodes)
-        LOG.debug("sending a %s to %s", msg.type, repr(node))
+        try:
+            node = random.choice(list(self.nodes))
+        except IndexError:
+            return
+        log.debug("sending a %s to %s", msg.type, repr(node))
         node.sendmsg(msg)
-            
-    def handle_block(self, node, msg):
-        blockchain.process_blockmsg(msg)
-        inv = msgs.Inv.make([msgs.InvVect.make(msgs.TYPE_BLOCK, msg.block.hash)])
-        #self.broadcast(inv)
         
-    def handle_tx(self, node, msg):
-        inv = msgs.Inv.make([msgs.InvVect.make(msgs.TYPE_TX, msg.hash)])
-        #self.broadcast(inv)
-    def serve_forever(self):
+    def serve(self):
         while True: 
             eventlet.sleep(10)
-            print self.nodes
+            #print self.nodes
 
-def start_network():
-    global server
-hosts = ["127.0.0.1"]
-
-if __name__ == "__main__":
-    import blockchain
-
-    logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
+def start_network(hosts=["127.0.0.1"]):
     server = BitcoinServer(hosts=hosts)
-    server.serve_forever()
+    eventlet.spawn_n(server.serve)
+    return server
+    
+if __name__ == "__main__":
+    import chaindownloader
+    logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
+    server = start_network()
+    dl = chaindownloader.Downloader(server)
+    debug.debug_locals["server"] = server
+    debug.debug_locals["dl"] = dl
+    while True: eventlet.sleep(1)
+
         

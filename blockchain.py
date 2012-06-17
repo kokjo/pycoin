@@ -6,7 +6,9 @@ import jserialize as js
 import bserialize as bs
 import bsddb
 import logging
-#import debug
+import Queue
+import threading
+from time import sleep
 
 import database
 from database import txn_required, TxnAbort
@@ -126,7 +128,7 @@ class Block(js.Entity, bs.Entity):
         if reverse: sl.reverse()
         for blkidx, tx_h in sl:
             if enum:
-                yield (blkid, transactions.Tx.get_by_hash(tx_h, txn=txn))
+                yield (blkidx, transactions.Tx.get_by_hash(tx_h, txn=txn))
             else:
                 yield transactions.Tx.get_by_hash(tx_h, txn=txn)
                 
@@ -188,7 +190,7 @@ class Block(js.Entity, bs.Entity):
             for blkidx, tx in self.iter_tx(from_idx=1, enum=True, txn=txn):
                 tx.confirm(self, coinbase=False, blkidx=blkidx, txn=txn)
                 tx.put(txn=txn)
-        except TxError:
+        except transactions.TxError:
             raise InvalidBlock()
 
     @txn_required    
@@ -240,8 +242,8 @@ class Block(js.Entity, bs.Entity):
         return fees
         
     def __repr__(self):
-        return "<Block %s(%d) - diff: %d - chain: %s>" % (
-        self.hexhash, self.number, bits_to_diff(self.block.bits), _chains.get(self.chain, "unknown(BUG)"))       
+        return "<Block %s(%d) - diff: %d - chain: %s, txs: %s>" % (
+        self.hexhash, self.number, bits_to_diff(self.block.bits), _chains.get(self.chain, "unknown(BUG)"), len(self.txs))       
          
     @constructor
     def make(self, blockmsg):
@@ -316,8 +318,26 @@ def find_split(old, new, txn=None):
     log.info("spilt found at %s(%d)", h2h(split.hash), split.number)
     return split, oldlist, newlist[1:]
 
+
+blkmsg_queue = Queue.Queue(500)
+
+def process_blockmsg(blkmsg):
+    global blkmsg_queue
+    blkmsg_queue.put(blkmsg)
+    
+def _process_blockmsg_thread():
+    global blkmsg_queue
+    while True:
+        blkmsg = blkmsg_queue.get()
+        _process_blockmsg(blkmsg)
+        sleep(0.01)
+
+process_blockmsg_th = threading.Thread(target=_process_blockmsg_thread)
+process_blockmsg_th.daemon = True   
+process_blockmsg_th.start()
+     
 @txn_required
-def process_blockmsg(blkmsg, txn=None):
+def _process_blockmsg(blkmsg, txn=None):
     if Block.exist_by_hash(blkmsg.block.hash, txn=txn):
         log.info("already have block %s", h2h(blkmsg.block.hash))
         return
@@ -330,10 +350,9 @@ def process_blockmsg(blkmsg, txn=None):
         blk.link(txn=txn)
         blk.confirm(txn=txn)
         blk.put(txn=txn)
-        return True
     else:
         log.info("block(%s) missing prev(%s)", h2h(blk.hash), h2h(blk.prev))
-        return False
+        
 if not Block.exist_by_hash(genesisblock.hash):
     add_genesis(genesisblock.blkmsg)
     
@@ -351,7 +370,7 @@ def read_blocks(f):
 if __name__ == "__main__":
     import sys
     import time
-    logging.basicConfig(format='%(name)s - %(message)s', level=logging.INFO)
+    logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
     cmd = sys.argv[1]
     if cmd == "loadblocks":
         import debug
