@@ -30,7 +30,10 @@ class Node:
     def sendmsg(self, msg):
         if not self.connected:
             raise Disconnected()
-        self.outq.put(msg)
+        try: 
+            self.sock.send(msgs.Header.serialize(msg))
+        except socket.error:
+            return self.close("socket closed")
 
     @property
     def peer_address(self):
@@ -38,19 +41,9 @@ class Node:
             return self.sock.getpeername()
         except socket.error as e:
             return ("0.0.0.0", 0)
-            
-    def send_thread(self):
-        while self.connected:
-            msg = self.outq.get()
-            try: 
-                self.sock.send(msgs.Header.serialize(msg))
-            except socket.error:
-                return self.close("socket closed")
-            eventlet.sleep(0.01)
                 
     def start_serving(self):
-        self.sending_thread = eventlet.spawn_n(self.recv_thread)
-        self.recving_thread = eventlet.spawn_n(self.send_thread)
+        self.recving_thread = eventlet.spawn_n(self.recv_thread)
         
     def recv_thread(self):
         while self.connected:
@@ -68,8 +61,6 @@ class Node:
         except struct.error as e:
             return self.close("struct.error", error=e)
         cmd = cmd.strip("\x00")
-        
-        log.debug("recvmsg: cmd: %s length:%d", cmd, length)
         
         if magic != NETWORK_MAGIC:
             return self.close("wrong magic")
@@ -108,6 +99,7 @@ class BitcoinNode(Node):
         Node.__init__(self, sock)
         self.server = server
         self.active = False
+        self.version_msg = None
         self.sendmsg(msgs.Version.make())#sender=self.server.address, reciever=self.peer_address))
         if self.server:
             self.server.connected(self)
@@ -133,14 +125,13 @@ class BitcoinNode(Node):
     def handle_version(self, msg):
         if msg.version < 31900:
             return self.close("to low version %d" % msg.version)
+        self.version_msg = msg
         self.sendmsg(msgs.Verack.make())
     
     def call_handler(self, msg):
         if hasattr(self, "handle_" + msg.type):
             return getattr(self, "handle_" + msg.type)(msg)        
         if self.server:
-            if hasattr(self.server, "handle_" + msg.type):
-                return getattr(self.server, "handle_" + msg.type)(self, msg)
             self.server.call_handler(self, msg)
             
     def __repr__(self):
@@ -153,7 +144,7 @@ class BitcoinServer:
     def __init__(self, listensock=None, hosts=[]):
         self.nodes = set()
         self.listensock = listensock
-        self.address = msgs.Address.make("127.0.0.1",8335)
+        self.address = msgs.Address.make("127.0.0.1", 8335)
         self.handlers = {}
         for ip in hosts:
             self.connect_to((ip, 8333))
@@ -177,6 +168,10 @@ class BitcoinServer:
         self.handlers[msgtype] = handlers
         
     def call_handler(self, node, msg):
+        handler = getattr(self, "handler_" + msg.type, None)
+        if handler:
+            handler(node, msg)
+
         for handler in self.handlers.get(msg.type, set()):
             handler(node, msg)
             
@@ -199,8 +194,13 @@ class BitcoinServer:
         
     def serve(self):
         while True: 
-            eventlet.sleep(10)
-            #print self.nodes
+            if self.listensock:
+                sock, addr = self.listensock.accept()
+                node = BitcoinNode(sock, self)
+                node.start_serving()
+            else:
+                eventlet.sleep(10)
+
 
 def start_network(hosts=["127.0.0.1"]):
     server = BitcoinServer(hosts=hosts)
