@@ -62,7 +62,7 @@ class Tx(js.Entity, bs.Entity):
         """update the database record of the transaction."""
         log.debug("putting tx %s", h2h(self.hash))
         if not Tx.exist(self.hash, txn=txn):
-            index_addrs(self, txn=txn)
+            index_script(self, txn=txn)
         txs.put(self.hash, self.tobinary(), txn=txn)
         
     @staticmethod
