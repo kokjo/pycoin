@@ -59,7 +59,7 @@ def open_db(filename, dbtype=DB.DB_BTREE, open_flags=[], flags=[], table_name=No
         db.set_flags(to_int(flags))
     if not open_flags:
         open_flags = dbflags
-    db.open(filename, dbtype, to_int(open_flags), database=table_name)
+    db.open(filename, dbtype, to_int(open_flags), dbname=table_name)
     db_log.info("database %s opened", filename)
     return db
 
