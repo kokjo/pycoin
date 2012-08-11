@@ -32,7 +32,7 @@ def search_script(sc, txn=None):
     cur = script_idx.cursor(txn=txn)
     k, v = cur.set(h)
     while k == h:
-        yield msg.TxPoint.frombinary(v)[0]
+        yield msgs.TxPoint.frombinary(v)[0]
         k, v = cur.next_dup()
 
 class Tx(js.Entity, bs.Entity):
