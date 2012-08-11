@@ -50,14 +50,16 @@ class TxnAbort(Exception):
         cb = self.callback
         if cb: return cb()
             
-def open_db(filename, dbtype=DB.DB_BTREE, flags=[]):
+def open_db(filename, dbtype=DB.DB_BTREE, open_flags=[], flags=[], table_name=None):
     db = DB.DB(env)
     def _close_db():
         db.close()
     atexit.register(_close_db)
-    if not flags:
-        flags = dbflags
-    db.open(filename, dbtype, to_int(flags))
+    if flags:
+        db.set_flags(to_int(flags))
+    if not open_flags:
+        open_flags = dbflags
+    db.open(filename, dbtype, to_int(open_flags), database=table_name)
     db_log.info("database %s opened", filename)
     return db
 

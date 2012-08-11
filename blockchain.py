@@ -39,10 +39,10 @@ class InvalidBlock(BlockError):
     
 log = logging.getLogger("pycoin.blockchain")
 
-chain = database.open_db("chain.dat")
+chain = database.open_db("chain.dat", table_name="blks")
 chain.set_get_returns_none(0)
-state = database.open_db("state.dat")
-blknums = database.open_db("blknum.dat")
+state = database.open_db("chain.dat", table_name="state")
+blknums = database.open_db("chain.dat", table_name="blknum")
 blknums.set_get_returns_none(0)
 orphans = {}
 
@@ -123,7 +123,7 @@ class Block(js.Entity, bs.Entity):
     def get_tx(self, idx, txn=None):
         return transactions.Tx.get_by_hash(self.txs[idx], txn=txn)
         
-    def iter_tx(self, from_idx=None, to_idx=None, reverse=False, enum=False, txn=None):
+    def iter_tx(self, from_idx=0, to_idx=None, reverse=False, enum=False, txn=None):
         sl = list(enumerate(self.txs[from_idx:to_idx], start=from_idx))
         if reverse: sl.reverse()
         for blkidx, tx_h in sl:
@@ -240,6 +240,15 @@ class Block(js.Entity, bs.Entity):
             tx = transactions.Tx.get_by_hash(tx_h, txn=txn)
             fees += tx.get_fee(txn=txn)
         return fees
+    
+    def changes_since(self, txn=None):
+        bestblock = get_bestblock(txn=txn)
+        split, reverted, confirmed = find_split(self, bestblock, txn=txn)
+        result = {}
+        result["reverted"] = [(blk.hash, [tx_h for tx_h in blk.txs]) for blk in reverted]
+        result["confirmed"] = [(blk.hash, [tx_h for tx_h in blk.txs]) for blk in confirmed]
+        return result
+        
         
     def __repr__(self):
         return "<Block %s(%d) - diff: %d - chain: %s, txs: %s>" % (
