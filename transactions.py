@@ -23,12 +23,15 @@ script_idx = database.open_db("txs.dat", flags=[database.DB.DB_DUP], table_name=
 script_idx.set_get_returns_none(0)
 log = logging.getLogger("pycoin.transactions")
 
+new_tx_callbacks = []
+
 def index_script(tx, txn=None):
     for tx_idx, out_p in enumerate(tx.outputs):
-        script_idx.put(doublesha(out_p.script), msgs.TxPoint.make(tx.hash, tx_idx).tobinary(), txn=txn)
+        script_idx.put(out_p.script, msgs.TxPoint.make(tx.hash, tx_idx).tobinary(), txn=txn)
+
+new_tx_callbacks.append(index_script)
 
 def search_script(sc, txn=None):
-    h = doublesha(sc)
     cur = script_idx.cursor(txn=txn)
     k, v = cur.set(h)
     while k == h:
@@ -62,7 +65,8 @@ class Tx(js.Entity, bs.Entity):
         """update the database record of the transaction."""
         log.debug("putting tx %s", h2h(self.hash))
         if not Tx.exist(self.hash, txn=txn):
-            index_script(self, txn=txn)
+            for cb in new_tx_callbacks:
+                cb(self, txn=txn)
         txs.put(self.hash, self.tobinary(), txn=txn)
         
     @staticmethod
