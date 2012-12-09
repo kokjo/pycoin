@@ -9,7 +9,8 @@ import eventlet
 from eventlet.green import socket
 from eventlet import queue
 import blockchain
-import debug
+
+import settings
 
 log = logging.getLogger("pycoin.network")
 
@@ -22,13 +23,13 @@ class Disconnected(Exception):
 class Node:
     def __init__(self, sock):
         self.sock = sock
-        self.connected = True
-        self.outq = queue.Queue(30)
-        self.sending_thread = None
+        self._connected = True
         self.recving_thread = None
+        self.connected()
         
     def sendmsg(self, msg):
-        if not self.connected:
+        log.debug("sending %s to %s", msg.type, repr(self))
+        if not self._connected:
             raise Disconnected()
         try: 
             self.sock.send(msgs.Header.serialize(msg))
@@ -46,31 +47,37 @@ class Node:
         self.recving_thread = eventlet.spawn_n(self.recv_thread)
         
     def recv_thread(self):
-        while self.connected:
+        while self._connected:
             msg = self.recvmsg()
             if msg:
                 self.call_handler(msg)
-            eventlet.sleep(0.01)
     
     def call_handler(self, msg):
         pass
+    def connected(self):
+        pass
+    def disconnected(self):
+        pass
+            
+    def read(self, size):
+        data = ""            
+        while size > len(data):
+             _ = self.sock.recv(min(size-len(data), 1024))
+             if _ == "":
+                return self.close("socket closed")
+             data += _
+        return data
+             
     def recvmsg(self):
-        header = self.sock.recv(24)
-        try:
-            magic, cmd, length, cksum = struct.unpack("<L12sL4s", header)
-        except struct.error as e:
-            return self.close("struct.error", error=e)
+        header = self.read(24)
+        magic, cmd, length, cksum = struct.unpack("<L12sL4s", header)
         cmd = cmd.strip("\x00")
+        log.debug("recvived %s from %s", cmd, repr(self))
         
         if magic != NETWORK_MAGIC:
             return self.close("wrong magic")
             
-        msg_data = ""            
-        while length > len(msg_data):
-             data = self.sock.recv(min(length-len(msg_data), 1024))
-             if data == "":
-                return self.close("socket closed")
-             msg_data += data
+        msg_data = self.read(length)
              
         try:
             msg_type = msgs.msgtable[cmd]
@@ -92,18 +99,16 @@ class Node:
         except socket.error:
             pass
         log.info("%s:%d has disconnected! reason:%s", self.peer_address[0], self.peer_address[1], reason)
-        self.connected = False
+        self._connected = False
+        self.disconnected()
         
 class BitcoinNode(Node):
     def __init__(self, sock, server):
-        Node.__init__(self, sock)
         self.server = server
         self.active = False
         self.version_msg = None
-        self.sendmsg(msgs.Version.make())#sender=self.server.address, reciever=self.peer_address))
-        if self.server:
-            self.server.connected(self)
-        
+        Node.__init__(self, sock)
+          
     @staticmethod
     def connect_to(addr, server):
         log.info("connecting to %s:%d", *addr)
@@ -117,10 +122,16 @@ class BitcoinNode(Node):
         node.start_serving()
         return node
         
-    def close(self, *args, **kwargs):
+    def connected(self):
+        log.info("connected to %s:%d", self.peer_address[0], self.peer_address[1])
+        self.sendmsg(msgs.Version.make())#sender=self.server.address, reciever=self.peer_address))
+        if self.server:
+            self.server.connected(self)
+            
+    def disconnected(self):
+        log.info("disconnected from %s:%d", self.peer_address[0], self.peer_address[1])
         if self.server:
             self.server.disconnected(self)
-        return Node.close(self, *args, **kwargs)
         
     def handle_version(self, msg):
         if msg.version < 31900:
@@ -150,11 +161,9 @@ class BitcoinServer:
             self.connect_to((ip, 8333))
                     
     def connect_to(self, addr):
-        log.info("connection to %s:%d", addr[0], addr[1])
         eventlet.spawn_n(BitcoinNode.connect_to, addr, self)
         
     def connected(self, node):
-        log.info("connected to %s:%d", node.peer_address[0], node.peer_address[1])
         self.nodes.add(node)
         node.sendmsg(msgs.Getaddr.make())
         
@@ -168,7 +177,7 @@ class BitcoinServer:
         self.handlers[msgtype] = handlers
         
     def call_handler(self, node, msg):
-        handler = getattr(self, "handler_" + msg.type, None)
+        handler = getattr(self, "handle_" + msg.type, None)
         if handler:
             handler(node, msg)
 
@@ -202,18 +211,20 @@ class BitcoinServer:
                 eventlet.sleep(10)
 
 
-def start_network(hosts=["127.0.0.1"]):
+def start_network(hosts=["127.0.0.1", "192.168.1.11"]):
     server = BitcoinServer(hosts=hosts)
     eventlet.spawn_n(server.serve)
     return server
     
 if __name__ == "__main__":
+    import debug
     import chaindownloader
     logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
-    server = start_network()
+    server = start_network(settings.NETWORK_NODES)
     dl = chaindownloader.Downloader(server)
     debug.debug_locals["server"] = server
     debug.debug_locals["dl"] = dl
-    while True: eventlet.sleep(1)
-
-        
+    while True:
+        if len(server.nodes)<10:
+            server.sendrandom(msgs.Getaddr.make())
+        eventlet.sleep(1)

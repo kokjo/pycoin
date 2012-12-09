@@ -15,22 +15,8 @@ from utils import ProtocolViolation
 
 import struct
 from socket import inet_ntoa, inet_aton
+
 class Entity(object):
-    """
-Each Entity subclass has a class variable called bfields, which is list of
-tuples contained as fieldname and a serialization class.
-
-bfields = [
-    ("field1", cls1),
-    ("field2", cls2),
-    ...
-]
-
-The object is serialized by tobinary() by concatanating the results of
-serializing the value of each field with its serialization class.
-
-Entity subclasses are serialization objects for their instances.
-"""
     def tobinary(self):
         retval = b""
         for (field, type) in self.bfields:
@@ -52,17 +38,18 @@ Entity subclasses are serialization objects for their instances.
 def structfmt(fmt):
     """Produce a serialization object for a value understood by struct.
 e.g. structfmt("<I") for 4-byte integers"""
-    class Foo():
+    fmtsize = struct.calcsize(fmt)
+    class _():
         @staticmethod
         def tobinary(obj):
             return struct.pack(fmt, obj)
         @staticmethod
         def frombinary(bdata):
             try:
-                return struct.unpack(fmt, bdata[:struct.calcsize(fmt)])[0], bdata[struct.calcsize(fmt):]
+                return struct.unpack(fmt, bdata[:fmtsize])[0], bdata[fmtsize:]
             except struct.error:
                 raise ProtocolViolation()
-    return Foo
+    return _
 
 class Str():
     @staticmethod
@@ -117,7 +104,7 @@ def VarList(ty):
             return retval, bdata
         @staticmethod
         def tobinary(obj):
-            return VarInt.tobinary(len(obj)) + b"".join((ty.tobinary(x) for x in obj))
+            return VarInt.tobinary(len(obj)) + "".join(ty.tobinary(x) for x in obj)
     return _
 
 class VarBytes():

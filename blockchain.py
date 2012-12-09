@@ -6,26 +6,16 @@ import jserialize as js
 import bserialize as bs
 import bsddb
 import logging
-import Queue
-import threading
-from time import sleep
+import settings
 
 import database
 from database import txn_required, TxnAbort
 import transactions
 
-try:
-    import psyco
-    psyco.full()
-except ImportError:
-    print 'Psyco not installed, the program will just run slower'
-
-
 MAIN_CHAIN = 1
 SIDE_CHAIN = 2
 ORPHAN_CHAIN = 3
 INVALID_CHAIN = 4
-
 
 _chains = {MAIN_CHAIN: "Main", SIDE_CHAIN: "Side", ORPHAN_CHAIN: "Orphan", INVALID_CHAIN: "Invalid"}
 
@@ -35,7 +25,6 @@ class BlockError(Exception):
 
 class InvalidBlock(BlockError):
     pass
-
     
 log = logging.getLogger("pycoin.blockchain")
 
@@ -126,10 +115,11 @@ class Block(js.Entity, bs.Entity):
     def iter_tx(self, from_idx=0, to_idx=None, reverse=False, enum=False, txn=None):
         sl = list(enumerate(self.txs[from_idx:to_idx], start=from_idx))
         if reverse: sl.reverse()
-        for blkidx, tx_h in sl:
-            if enum:
+        if enum:
+            for blkidx, tx_h in sl:
                 yield (blkidx, transactions.Tx.get_by_hash(tx_h, txn=txn))
-            else:
+        else:
+            for blkidx, tx_h in sl:
                 yield transactions.Tx.get_by_hash(tx_h, txn=txn)
                 
     def get_prev(self, txn=None):
@@ -138,7 +128,7 @@ class Block(js.Entity, bs.Entity):
     def get_next_bits(self, txn=None):
         targettimespan = 14 * 24 * 60 * 60 # 2 weeks in secounds
         spacing = 10 * 60 # 10 min in secounds
-        interval = targettimespan/spacing
+        interval = targettimespan/spacing # 2 weeks of blocks(2016)
         if (self.number + 1) % interval != 0:
             return self.block.bits
         log.info("DIFF: retarget, current bits: %s", hex(self.block.bits))
@@ -147,18 +137,13 @@ class Block(js.Entity, bs.Entity):
             first_blk = first_blk.get_prev(txn=txn)
         realtimespan = self.block.time - first_blk.block.time
         log.info("DIFF: timespan before limits: %d", realtimespan)
-        if realtimespan < targettimespan/4:
-            realtimespan = targettimespan/4
-        if realtimespan > targettimespan*4:
-            realtimespan = targettimespan*4
+        if realtimespan < targettimespan/4: realtimespan = targettimespan/4
+        if realtimespan > targettimespan*4: realtimespan = targettimespan*4
         log.info("DIFF: timespan after limits: %d", realtimespan)
-        newtarget = bits_to_target(self.block.bits)
-        newtarget *= realtimespan
-        newtarget /= targettimespan
+        newtarget = (bits_to_target(self.block.bits)*realtimespan)/targettimespan
         if newtarget > bits_to_target(0x1d00ffff):
             newtarget = bits_to_target(0x1d00ffff)
         bits = target_to_bits(newtarget)
-            
         log.info("DIFF: next bits: %s", hex(bits))
         return bits
         
@@ -184,15 +169,15 @@ class Block(js.Entity, bs.Entity):
             return False
         self.chain = MAIN_CHAIN
         try:
-            coinbase_tx = self.get_tx(0, txn=txn)
-            coinbase_tx.confirm(block=self, blkidx=0, coinbase=True, txn=txn)
-            coinbase_tx.put(txn=txn)
-            for blkidx, tx in self.iter_tx(from_idx=1, enum=True, txn=txn):
-                tx.confirm(self, coinbase=False, blkidx=blkidx, txn=txn)
+            for blkidx, tx in self.iter_tx(from_idx=0, enum=True, txn=txn):
+                tx.confirm(self, coinbase=(blkidx==0), blkidx=blkidx, txn=txn)
                 tx.put(txn=txn)
         except transactions.TxError:
             raise InvalidBlock()
-
+        self.put(txn=txn)
+        for hook in settings.BLOCK_CONFIRM_HOOKS:
+            hook(self, txn=txn)
+            
     @txn_required    
     def revert(self, txn=None):
         log.info("reverting block %s(%d)", h2h(self.hash), self.number)
@@ -200,16 +185,17 @@ class Block(js.Entity, bs.Entity):
         if self.chain != MAIN_CHAIN:
             log.debug("reverting a block, that is not in main chain? (bug?)")
         self.chain = SIDE_CHAIN 
-        for tx in self.iter_tx(from_idx=1, reverse=True, txn=txn):
-            tx.revert(block=self, coinbase=False, txn=txn)
+        for blkidx, tx in self.iter_tx(from_idx=0, enum=True, reverse=True, txn=txn):
+            tx.revert(block=self, coinbase=(blkidx==0), txn=txn)
             tx.put(txn=txn)
-        coinbase_tx = self.get_tx(0, txn=txn)
-        coinbase_tx.revert(block=self, coinbase=True, txn=txn)    
-        coinbase_tx.put(txn=txn)
-    
+        self.put(txn=txn)
+        for hook in settings.BLOCK_REVERT_HOOKS:
+            hook(self, txn=txn)
+                    
     @txn_required
     def invalidate(self, txn=None):
         self.chain = CHAIN_INVALID
+        self.put(txn=txn)
         blocks_to_invalidate = set(self.nexts)
         while blocks_to_invalidate:
             blk_h = blocks_to_invalidate.pop()
@@ -217,21 +203,20 @@ class Block(js.Entity, bs.Entity):
             blk.chain = CHAIN_INVALID
             blk.put(txn=txn)
             blocks_to_invalidate.update(blk.nexts)
-        self.put(txn=txn)
-        
+
     @txn_required        
     def link(self, txn=None):
         prev = self.get_prev(txn=txn)
         prev.nexts.append(self.hash)
+        prev.put(txn=txn)
         if prev.chain == MAIN_CHAIN:
             self.chain = SIDE_CHAIN
         else:
             self.chain = prev.chain
         if not self.verify(txn=txn):
-            self.chain = CHAIN_INVALID
+            self.invalidate()
         self.number = prev.number + 1
         self.totaldiff = prev.totaldiff + bits_to_diff(self.block.bits)
-        prev.put(txn=txn)
         self.put(txn=txn)
     
     def get_all_fees(self, txn=None):
@@ -298,13 +283,11 @@ def reorganize(old, new, txn=None):
     log.info("REORG: split:%s(%d)", h2h(split.hash), split.number)
     for blk in old_blocks:
         blk.revert(txn=txn)
-        blk.put(txn=txn)
     for blk in reversed(new_blocks):
         try:
             blk.confirm(txn=txn)
         except InvalidBlock:
             raise TxnAbort(blk.invalidate)
-        blk.put(txn=txn)
         
 def find_split(old, new, txn=None):
     """finds the split between old and new. Returns (spilt, oldlist, newlist)"""
@@ -327,26 +310,8 @@ def find_split(old, new, txn=None):
     log.info("spilt found at %s(%d)", h2h(split.hash), split.number)
     return split, oldlist, newlist[1:]
 
-
-blkmsg_queue = Queue.Queue(500)
-
-def process_blockmsg(blkmsg):
-    global blkmsg_queue
-    blkmsg_queue.put(blkmsg)
-    
-def _process_blockmsg_thread():
-    global blkmsg_queue
-    while True:
-        blkmsg = blkmsg_queue.get()
-        _process_blockmsg(blkmsg)
-        sleep(0.01)
-
-process_blockmsg_th = threading.Thread(target=_process_blockmsg_thread)
-process_blockmsg_th.daemon = True   
-process_blockmsg_th.start()
-     
 @txn_required
-def _process_blockmsg(blkmsg, txn=None):
+def process_blockmsg(blkmsg, txn=None):
     if Block.exist_by_hash(blkmsg.block.hash, txn=txn):
         log.info("already have block %s", h2h(blkmsg.block.hash))
         return

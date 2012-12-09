@@ -8,9 +8,10 @@ import bsddb
 import logging
 import database
 from database import txn_required
-import blockchain
+#import blockchain
 import struct
 import ec
+import settings
 
 class TxError(Exception):
     pass
@@ -19,37 +20,22 @@ class TxInputAlreadySpend(TxError):
     
 txs = database.open_db("txs.dat", table_name="txs")
 txs.set_get_returns_none(0)
-script_idx = database.open_db("txs.dat", flags=[database.DB.DB_DUP], table_name="script_index")
-script_idx.set_get_returns_none(0)
 log = logging.getLogger("pycoin.transactions")
-
-new_tx_callbacks = []
-
-def index_script(tx, txn=None):
-    for tx_idx, out_p in enumerate(tx.outputs):
-        script_idx.put(out_p.script, msgs.TxPoint.make(tx.hash, tx_idx).tobinary(), txn=txn)
-
-new_tx_callbacks.append(index_script)
-
-def search_script(sc, txn=None):
-    cur = script_idx.cursor(txn=txn)
-    k, v = cur.set(h)
-    while k == h:
-        yield msgs.TxPoint.frombinary(v)[0]
-        k, v = cur.next_dup()
 
 class Tx(js.Entity, bs.Entity):
     fields = {
         "tx":msgs.Tx,
         "block":js.Hash,
+        "blkindex":js.Int,
+        #"flags":js.Int,
         "redeemed":js.List(js.Hash),
-        "blkindex":js.Int
     }
     bfields = [
         ("tx", msgs.Tx),
         ("block", bs.Hash),
+        ("blkindex", bs.structfmt("<L")),
+        #("flags", bs.VarInt),
         ("redeemed", bs.VarList(bs.Hash)),
-        ("blkindex", bs.structfmt("<L"))
     ]
     
     @staticmethod
@@ -65,7 +51,7 @@ class Tx(js.Entity, bs.Entity):
         """update the database record of the transaction."""
         log.debug("putting tx %s", h2h(self.hash))
         if not Tx.exist(self.hash, txn=txn):
-            for cb in new_tx_callbacks:
+            for cb in settings.NEW_TX_HOOKS:
                 cb(self, txn=txn)
         txs.put(self.hash, self.tobinary(), txn=txn)
         
@@ -115,7 +101,7 @@ class Tx(js.Entity, bs.Entity):
     def get_block(self, txn=None):
         """get the block in which this transaction is included. returns None, if the transaction is not confirmed"""
         if self.confirmed:
-            return blockchain.Block.get_by_hash(self.block)
+            return blockchain.Block.get_by_hash(self.block, txn=txn)
         else:
             return None
             
@@ -131,7 +117,8 @@ class Tx(js.Entity, bs.Entity):
     def confirm(self, block, blkidx=0, coinbase=False, txn=None):
         log.info("confirming tx %s", h2h(self.hash))
         self.block = block.hash
-        #self.check_signatures()
+        if settings.TX_CHECK_SCRIPTS:
+            self.check_signatures(txn=txn)
         if coinbase:
             return
         for inp in self.tx.inputs:
@@ -153,8 +140,8 @@ class Tx(js.Entity, bs.Entity):
         return sum(i.amount for i in self.tx.outputs)
     
     def get_amount_in(self, block=None, coinbase=False, txn=None):
-        if coinbase and self.coinbase:
-            if block:
+        if self.coinbase:
+            if coinbase and block:
                 reward = 50*COIN >> (block.number / 210000)
                 fees = block.get_all_fees(txn=txn)
                 return reward + fees
@@ -162,8 +149,7 @@ class Tx(js.Entity, bs.Entity):
                 return 0
         amount = 0
         for inp in self.tx.inputs:
-            inp_tx = Tx.get_by_hash(inp.outpoint.tx, txn=txn)
-            amount += inp_tx.get_outpoint(inp.outpoint).amount
+            amount += Tx.get_outpoint(inp.outpoint, txn=txn).amount
         return amount
     
     def get_fee(self, txn=None):
@@ -185,20 +171,20 @@ class Tx(js.Entity, bs.Entity):
         h2h(self.hash), len(self.tx.inputs), len(self.tx.outputs), str(self.coinbase),
         self.get_amount_in(), self.get_amount_out(), self.get_fee())
     
-    def get_simple_hash(self, inputidx, hashtype):
+    def get_simple_hash(self, inputidx, hashtype, txn=None):
         assert hashtype == 1
         tx = msgs.Tx.frombinary(self.tx.tobinary())[0] # copy the transaction
         for i, inp in enumerate(tx.inputs):
             if i == inputidx:
-                outp = Tx.get_outpoint(inp.outpoint)
+                outp = Tx.get_outpoint(inp.outpoint, txn=txn)
                 inp.script = outp.script
             else:
                 inp.script = ""
         return doublesha(tx.tobinary()+struct.pack("<L", hashtype))
     
-    def extract_info(self, inputidx):
+    def extract_info(self, inputidx, txn=None):
         inp = self.inputs[inputidx]
-        outp = Tx.get_outpoint(inp.outpoint)
+        outp = Tx.get_outpoint(inp.outpoint, txn=txn)
         if outp.script[:2] == "\x76\xa9" and outp.script[-2:] == "\x88\xac": #to address
             address = outp.script[3:-2]
             rest = inp.script
@@ -224,11 +210,11 @@ class Tx(js.Entity, bs.Entity):
                 return (0, None, None, None)
             return (2, None, sig, key)
             
-    def check_signatures(self):
+    def check_signatures(self, txn=None):
         if self.coinbase:
             return True
         for idx in range(len(self.inputs)):
-            sc_type, address, sig, key = self.extract_info(idx)
+            sc_type, address, sig, keystr = self.extract_info(idx, txn=txn)
             
             if sc_type == 0:
                 log.warning("tx input %s:%d could not be validated, could not extract info", h2h(self.hash), idx)
@@ -238,7 +224,6 @@ class Tx(js.Entity, bs.Entity):
                 if hash160(key) != address:
                      log.warning("tx input %s:%d is invalid, address and publickey does not match", h2h(self.hash), idx)
                      return False
-                
             elif sc_type == 2:
                 log.info("tx input %s:%d is from coin generation", h2h(self.hash), idx)
                      
@@ -247,8 +232,9 @@ class Tx(js.Entity, bs.Entity):
                 log.warning("tx input %s:%d could not be validated, hashtype is wrong", h2h(self.hash), idx)
                 continue
             
-            simple_hash = self.get_simple_hash(idx, hashtype)
-            res = ec.verify_sig(sig, simple_hash, key)
+            simple_hash = self.get_simple_hash(idx, hashtype, txn=txn)
+            key = ec.Key.from_pubkey(keystr)
+            res = key.verify(simple_hash, sig)
             if res:
                 log.info("tx input %s:%d, is valid", h2h(self.hash), idx)
             else:
@@ -266,8 +252,8 @@ class Tx(js.Entity, bs.Entity):
         return msgs.TxPoint(self.hash, i)
         
     @staticmethod
-    def get_outpoint(outpoint):
-        tx = Tx.get_by_hash(outpoint.tx)
+    def get_outpoint(outpoint, txn=None):
+        tx = Tx.get_by_hash(outpoint.tx, txn=txn)
         assert outpoint.index < len(tx.outputs), "outpoint index out of range"
         return tx.outputs[outpoint.index]
     
