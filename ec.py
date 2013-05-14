@@ -56,7 +56,7 @@ class Key:
     def generate(cls, secret=None, compressed=True):
         key = cls()
         key.__generate(secret)
-        key.set_compressed(conpressed)
+        key.set_compressed(compressed)
         return key
     
     @classmethod
