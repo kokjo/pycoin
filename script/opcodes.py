@@ -1,8 +1,9 @@
 import struct
+import utils
 from bignum import *
 
 class Opcode(object):
-    num = None    
+    num = None
     def encode(self):
         return struct.pack("<B", self.num)
     @classmethod
@@ -22,7 +23,7 @@ class OP_FALSE(Opcode):
     def eval(self, ctx):
         return ctx.stack.push("")
             
-HEX_ONLY_PUSH = True
+HEX_ONLY_PUSH = False
 class _OP_PUSH(Opcode):
     num = None
     def __init__(self, data):
@@ -31,23 +32,26 @@ class _OP_PUSH(Opcode):
         return ctx.stack.push(self.data)
     def __repr__(self):
         if HEX_ONLY_PUSH:
-            return '"%s"' % (self.data.encode("hex"))
+            return '%s' % (self.data.encode("hex"))
         else:
             return '%s("%s")' % (self.__class__.__name__, self.data.encode("hex"))
         
 class _OP_PUSHN(_OP_PUSH):
     num = None
-    def __init__(self, data):
+    def __init__(self, data, invalid=False):
         self.data = data
+        self._invalid = invalid
     
     def encode(self):
+        if self._invalid:
+            raise Exception("invalid opcode!!!", self)
         return struct.pack("<B", self.num) + self.data
     
     @classmethod
     def decode(cls, script):
         data = script[1:1+cls.num]
         if len(data) != cls.num:
-            return None
+            return cls(data, invalid=True), ""
         return cls(data), script[1+cls.num:]
 
 push_n = """
@@ -127,6 +131,7 @@ class OP_NOP(Opcode):
     num = 97
     def eval(self, ctx):
         return True
+        
 class OP_IF(Opcode):
     num = 99
     def may_exec(self, ctx):
@@ -138,6 +143,7 @@ class OP_IF(Opcode):
             val = CastToBool(ctx.stack.pop())
             ctx.flow_stack.append(val)
         return True
+        
 class OP_NOTIF(Opcode):
     num = 100
     def may_exec(self, ctx):
@@ -149,6 +155,7 @@ class OP_NOTIF(Opcode):
             val = CastToBool(ctx.stack.pop())
             ctx.flow_stack.append(not val)
         return True
+        
 class OP_ELSE(Opcode):
     num = 103
     def may_exec(self, ctx):
@@ -156,6 +163,7 @@ class OP_ELSE(Opcode):
     def eval(self, ctx):
         ctx.flow_stack[-1] = not ctx.flow_stack[-1]
         return True
+        
 class OP_ENDIF(Opcode):
     num = 104
     def may_exec(self, ctx):
@@ -171,11 +179,46 @@ class OP_VERIFY(Opcode):
             return ctx.stack.pop()
         else:
             return False  
+            
+class OP_RETURN(Opcode):
+    num = 106
+    def eval(self, ctx):
+        return False
+
 class OP_DROP(Opcode):
     num = 117
     def eval(self, ctx):
         ctx.stack.pop()
         return True
+
+class OP_DUP(Opcode):
+    num = 118
+    def eval(self, ctx):
+        ctx.stack.push(ctx.stack.top())
+        return True
+        
+class OP_EQUALVERIFY(Opcode):
+    num = 136
+    def eval(self, ctx):
+        if ctx.stack.pop() == ctx.stack.pop():
+            return True
+
+class OP_HASH160(Opcode):
+    num = 169
+    def eval(self, ctx):
+        d = ctx.stack.pop()
+        h = utils.hash160(d)
+        ctx.stack.push(h)
+        return True
+
+class OP_CHECKSIG(Opcode):
+    num = 172
+    def eval(self, ctx):
+        pub = ctx.stack.pop()
+        sig = ctx.stack.pop()
+        ctx.stack.push("\x01")
+        return True
+        
 opcode_dict = {}
 for op_name, op in locals().items():
     if op_name.startswith("OP_"):
@@ -183,7 +226,13 @@ for op_name, op in locals().items():
             opcode_dict[op.num] = op
         except AttributeError:
             pass
-            
+
+opcode_names = {}
+for op_name, op in locals().items():
+    if op_name.startswith("OP_"):
+        opcode_names[op_name] = op
+
+
 def decode_script(script):
     ops = []
     while script:
@@ -197,3 +246,30 @@ def encode_script(ops):
     for op in ops:
         script += op.encode()
     return script
+
+def address_script(address):
+    h = utils.addr2hash(address)
+    if h:
+        return [OP_DUP(), OP_HASH160(), OP_PUSH(h), OP_EQUALVERIFY(), OP_CHECKSIG()]
+    else: 
+        return False
+    
+def match_script(ops, match):
+    if len(ops) != len(match):
+        return False
+    l = []
+    for op, m in zip(ops, match):
+        if m == None:
+            if isinstance(op, _OP_PUSH):
+                l.append(op.data)
+            else:
+                return False
+        else:
+            if isinstance(op, m):
+                continue
+    return l
+
+def extract_keyhash(ops):
+    r = match_script(ops, [OP_DUP, OP_HASH160, None, OP_EQUALVERIFY, OP_CHECKSIG])
+    if r:
+        return r[0]
