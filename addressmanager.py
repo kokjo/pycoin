@@ -27,12 +27,12 @@ class AddressManager(object):
     def __init__(self, server):
         self.server = server
         self.server.add_handler("addr", self.handle_addr)
-        self.server.add_handler("addr", self.handle_addr)
         
         eventlet.spawn_n(self.main_thread)
         
     def handle_addr(self, node, msg):
+        pass
         
     def main_thread(self):
         while True:
-            
+            return
