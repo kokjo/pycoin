@@ -16,6 +16,7 @@ class Downloader(object):
         self.server.add_handler("inv", self.handle_inv)
         self.server.add_handler("block", self.handle_block)
         self.server.add_handler("tx", self.handle_tx)
+        self.server.add_handler("getdata", self.handle_getdata)
         
         eventlet.spawn_n(self.flush_inv_thread)
         eventlet.spawn_n(self.download_blocks)
@@ -24,6 +25,7 @@ class Downloader(object):
     def flush_inv_thread(self):
         while True:
             if self.invs:
+                print "Flushing invs"
                 msg = msgs.Inv.make(self.invs)
                 self.server.broadcast(msg)
                 self.invs = set()
@@ -54,7 +56,7 @@ class Downloader(object):
         for obj in objs:
             if obj not in self.downloading:
                 self.downloading.add(obj.hash)
-                eventlet.spawn_after(5, self.cancel_download, obj.hash)
+                eventlet.spawn_after(10, self.cancel_download, obj.hash)
                 objs_to_download.add(obj)
         sendfunc(msgs.Getdata.make(objs_to_download))
         
@@ -62,12 +64,11 @@ class Downloader(object):
         objs = set()
         for obj in msg.objs:
             if obj.objtype == msgs.TYPE_TX:
-                if transactions.Tx.exist(obj.hash):
-                    continue
-            if obj.objtype == msgs.TYPE_BLOCK:
-                if blockchain.Block.exist_by_hash(obj.hash):
-                    continue
-            objs.add(obj)
+                if not transactions.Tx.exist(obj.hash):
+                    objs.add(obj)
+            elif obj.objtype == msgs.TYPE_BLOCK:
+                if not blockchain.Block.exist_by_hash(obj.hash):
+                    objs.add(obj)
         self.download_objs(objs, node.sendmsg)
     
     def check_missing(self, h):
@@ -88,6 +89,7 @@ class Downloader(object):
     
     def handle_block(self, node, msg):
         self.got_blkmsg(msg.block.hash)
+        print "downloaded block %s" % h2h(msg.block.hash)
         if blockchain.Block.exist_by_hash(msg.block.hash):
             return
         if blockchain.Block.exist_by_hash(msg.block.prev):
@@ -105,4 +107,17 @@ class Downloader(object):
         self.invs.add(msgs.InvVect.make(msgs.TYPE_TX, msg.hash))
         print "downloaded tx %s" % h2h(msg.hash)
         transactions.Tx.get_or_make(msg)
+    
+    def handle_getdata(self, node, msg):
+        for obj in msg.objs:
+            if obj.objtype == msgs.TYPE_TX:
+                if transactions.Tx.exist(obj.hash):
+                    tx = transactions.Tx.get_by_hash(obj.hash)
+                    print "sending tx %s to %s" % (h2h(obj.hash), repr(node))
+                    node.sendmsg(tx.tx)
+            if obj.objtype == msgs.TYPE_BLOCK:
+                if blockchain.Block.exist(obj.hash):
+                    blk = blockchain.Block.get_by_hash(obj.hash)
+                    print "sending block %s to %s" % (h2h(obj.hash), repr(node))
+                    node.sendmsg(blk.tonetwork())
         

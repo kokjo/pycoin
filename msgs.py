@@ -53,6 +53,43 @@ class Address(js.Entity, bs.Entity):
         ("ip", bs.IPv4Inv6),
         ("port", bs.structfmt("!H")),
     ]
+    
+    def __eq__(self, other):
+        if isinstance(other, Address):
+            return self.ip == other.ip and self.port == other.port
+        return False
+            
+    def __hash__(self):
+        return hash(self.ip) ^ hash(self.port)
+        
+    @constructor
+    def make(self, ip, port):
+        self.services = 1 # Always 1 in current protocol
+        self.ip = ip
+        self.port = port
+
+class AddressTimestamp(js.Entity, bs.Entity):
+    fields = {
+        "timestamp":js.Int,
+        "services":js.Int,
+        "ip":js.IPv4,
+        "port":js.Int
+    }
+    bfields = [
+        ("timestamp", bs.structfmt("<I")),
+        ("services", bs.structfmt("<Q")),
+        ("ip", bs.IPv4Inv6),
+        ("port", bs.structfmt("!H")),
+    ]
+    
+    def __eq__(self, other):
+        if isinstance(other, Address):
+            return self.ip == other.ip and self.port == other.port
+        return False
+            
+    def __hash__(self):
+        return hash(self.ip) ^ hash(self.port)
+        
     @constructor
     def make(self, ip, port):
         self.services = 1 # Always 1 in current protocol
@@ -70,7 +107,8 @@ class Version(js.Entity, bs.Entity):
         "sender":Address,
         "nonce":js.Int,
         "useragent":js.Str,
-        "finalblock":js.Int
+        "finalblock":js.Int,
+        #"realy":js.Bool
     }
     bfields = [
         ("version", bs.structfmt("<I")),
@@ -79,11 +117,12 @@ class Version(js.Entity, bs.Entity):
         ("reciever", Address),
         ("sender", Address),
         ("nonce", bs.structfmt("<Q")),
-        ("useragent", bs.Str),
+        ("useragent", bs.VarBytes),
         ("finalblock", bs.structfmt("<I")),
+        #("relay", bs.structfmt("<?"))
     ]
     @constructor
-    def make(self, version=60000, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0), useragent="pycoin"):
+    def make(self, version=60000, sender=Address.make("0.0.0.0",0), reciever=Address.make("0.0.0.0",0), useragent="/pycoin:0.0.1/"):
         self.version = version
         self.services = 0
         self.time = int(time.time())
@@ -92,7 +131,8 @@ class Version(js.Entity, bs.Entity):
         self.nonce = 1234134124
         self.useragent = useragent
         self.finalblock = 1
-
+        #self.relay = True
+        
 class Verack(js.Entity, bs.Entity):
     type = "verack"
     fields = {
@@ -127,10 +167,10 @@ class Addr(js.Entity, bs.Entity):
     type = "addr"
     fields = {
         "type":js.Str,
-        "addrs":js.List(Address),
+        "addrs":js.List(AddressTimestamp),
     }
     bfields = [
-        ("addrs", bs.VarList(Address)),
+        ("addrs", bs.VarList(AddressTimestamp)),
     ]
 
 class Getaddr(js.Entity, bs.Entity):
@@ -270,6 +310,7 @@ class Block(js.Entity, bs.Entity):
         ("bits", bs.structfmt("<I")),
         ("nonce", bs.structfmt("<I")),
     ]
+    
     @cachedproperty
     def hash(self):
         return doublesha(self.tobinary())

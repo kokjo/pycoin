@@ -17,6 +17,10 @@ import struct
 from socket import inet_ntoa, inet_aton
 
 class Entity(object):
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
     def tobinary(self):
         retval = b""
         for (field, type) in self.bfields:
@@ -54,11 +58,11 @@ e.g. structfmt("<I") for 4-byte integers"""
 class Str():
     @staticmethod
     def tobinary(obj):
-        return obj.encode("ascii") + b'\0'
+        return obj.encode("ascii") + '\0'
     @staticmethod
     def frombinary(bdata):
-        bytes, ch, bdata = bdata.partition(b'\0')
-        if ch == b'':
+        bytes, ch, bdata = bdata.partition('\0')
+        if ch == '':
             raise ProtocolViolation
         try:
             return bytes.decode("ascii"), bdata
