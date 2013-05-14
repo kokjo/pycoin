@@ -1,21 +1,15 @@
+import eventlet
+from eventlet.green import socket
 import msgs
-from utils import *
-import time
-import random
 import logging
 import struct
 import traceback
-import eventlet
-from eventlet.green import socket
-from eventlet import queue
-import blockchain
-
-import settings
-
-log = logging.getLogger("pycoin.network")
+from utils import *
 
 MAGIC_MAINNET = 0xd9b4bef9
 NETWORK_MAGIC = MAGIC_MAINNET
+
+log = logging.getLogger(__name__)
 
 class Disconnected(Exception):
     pass
@@ -87,7 +81,7 @@ class Node:
             
         try:
             return msg_type.frombinary(msg_data)[0]
-        except ProtocolViolation as e:
+        except Exception as e:
             log.debug("%s: %s", cmd, msg_data.encode("hex"))
             self.close("protocolviolation", error=e)
                         
@@ -98,7 +92,8 @@ class Node:
             self.sock.close()
         except socket.error:
             pass
-        log.info("%s:%d has disconnected! reason:%s", self.peer_address[0], self.peer_address[1], reason)
+        log.info("%s:%d has disconnected! reason:%s",
+          self.peer_address[0], self.peer_address[1], reason)
         self._connected = False
         self.disconnected()
         
@@ -124,7 +119,7 @@ class BitcoinNode(Node):
         
     def connected(self):
         log.info("connected to %s:%d", self.peer_address[0], self.peer_address[1])
-        self.sendmsg(msgs.Version.make())#sender=self.server.address, reciever=self.peer_address))
+        self.sendmsg(msgs.Version.make())
         if self.server:
             self.server.connected(self)
             
@@ -151,80 +146,29 @@ class BitcoinNode(Node):
     def handle_verack(self, msg):
         self.active = True
 
-class BitcoinServer:
-    def __init__(self, listensock=None, hosts=[]):
-        self.nodes = set()
-        self.listensock = listensock
-        self.address = msgs.Address.make("127.0.0.1", 8335)
-        self.handlers = {}
-        for ip in hosts:
-            self.connect_to((ip, 8333))
-                    
-    def connect_to(self, addr):
-        eventlet.spawn_n(BitcoinNode.connect_to, addr, self)
-        
-    def connected(self, node):
-        self.nodes.add(node)
-        node.sendmsg(msgs.Getaddr.make())
-        
-    def disconnected(self, node):
-        log.info("disconnected from %s:%d", node.peer_address[0], node.peer_address[1])
-        self.nodes.remove(node)
-        
-    def add_handler(self, msgtype, handler):
-        handlers = self.handlers.get(msgtype, set())
-        handlers.add(handler)
-        self.handlers[msgtype] = handlers
-        
-    def call_handler(self, node, msg):
-        handler = getattr(self, "handle_" + msg.type, None)
-        if handler:
-            handler(node, msg)
-
-        for handler in self.handlers.get(msg.type, set()):
-            handler(node, msg)
-            
-    def handle_addr(self, node, msg):
-        for addr in msg.addrs[:5]:
-            if len(self.nodes) < 100:
-                self.connect_to((addr.ip, addr.port))
-                    
-    def broadcast(self, msg):
-        for node in self.nodes:
-            node.sendmsg(msg)
-            
-    def sendrandom(self, msg):
-        try:
-            node = random.choice(list(self.nodes))
-        except IndexError:
-            return
-        log.debug("sending a %s to %s", msg.type, repr(node))
-        node.sendmsg(msg)
-        
-    def serve(self):
-        while True: 
-            if self.listensock:
-                sock, addr = self.listensock.accept()
-                node = BitcoinNode(sock, self)
-                node.start_serving()
-            else:
-                eventlet.sleep(10)
-
-
-def start_network(hosts=["127.0.0.1", "192.168.1.11"]):
-    server = BitcoinServer(hosts=hosts)
-    eventlet.spawn_n(server.serve)
-    return server
-    
 if __name__ == "__main__":
-    import debug
-    import chaindownloader
+    import sys
     logging.basicConfig(format='%(name)s - %(message)s', level=logging.DEBUG)
-    server = start_network(settings.NETWORK_NODES)
-    dl = chaindownloader.Downloader(server)
-    debug.debug_locals["server"] = server
-    debug.debug_locals["dl"] = dl
-    while True:
-        if len(server.nodes)<10:
-            server.sendrandom(msgs.Getaddr.make())
-        eventlet.sleep(1)
+    node = BitcoinNode.connect_to((sys.argv[1], int(sys.argv[2])), None)
+    
+    def dump_inv(msg):
+        print msg.tojson()
+        node.sendmsg(msgs.Getdata.make(msg.objs))
+    node.handle_inv = dump_inv
+    
+    def dump_tx(msg):
+        log.info("got tx: %s", h2h(msg.hash))
+        print msg.tojson()
+    node.handle_tx = dump_tx
+    
+    def dump_addr(msg):
+        print msg.tojson()
+    node.handle_addr = dump_addr
+    
+    old_handle_version = node.handle_version
+    def dump_version(msg):
+        print msg.tojson()
+        old_handle_version(msg)
+        
+    node.handle_version = dump_version
+    while node._connected: eventlet.sleep(1)
