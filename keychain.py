@@ -77,7 +77,7 @@ class KeyEntry(bs.Entity, js.Entity):
         self.privatkey = self._key.get_privkey()
         self.publickey = self._key.get_pubkey() 
         self.txs = []
-        return cls
+        return self
         
     @classmethod
     def generate(cls):

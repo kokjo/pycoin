@@ -2,6 +2,9 @@ import hashlib
 from hashlib import sha256
 
 import math
+
+import importlib
+
 def ripe160(d=""):
     return hashlib.new("ripemd160", d)
 #import jserialize as js
@@ -150,6 +153,7 @@ def b58decode(v, length):
 
 def pubkey2addr(pubkey):
     return hash2addr(hash160(pubkey))
+    
 def hash2addr(h160):
     vh160 = "\x00"+h160  # \x00 is version 0
     addr=vh160+checksum(vh160)
@@ -157,11 +161,20 @@ def hash2addr(h160):
 
 def addr2hash(addr):
     bytes = b58decode(addr, 25)
-    zero, hash160, chk = bytes[0], bytes[1:21], bytes[21:25]
-    if checksum(hash160) == chk:
-        return hash160
+    zero, keyhash, chk = bytes[0], bytes[1:21], bytes[21:25]
+    if checksum(zero+keyhash) == chk:
+        return keyhash
     else:
         return None
+
+def run_hooks(hook_list, *args, **kwargs):
+    for idx, hook in enumerate(hook_list):
+        if type(hook) == str:
+            module, hook = hook.rsplit(".",1)
+            module = importlib.import_module(module)
+            hook = getattr(module, hook)
+            hook_list[idx] = hook
+        hook(*args, **kwargs)
          
 nullhash = "\x00"*32
 COIN = 100000000
